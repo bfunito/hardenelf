@@ -6,6 +6,10 @@ import argparse
 from pathlib import Path
 
 from shstk_injector import __version__
+from shstk_injector.entry_trampoline import (
+    EntryInjectionResult,
+    inject_entry_trampolines,
+)
 from shstk_injector.expand import ExpansionResult, expand_binary
 
 
@@ -14,12 +18,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        result = expand_binary(
-            args.input,
-            args.output,
-            shadow_size=args.shadow_size,
-            saved_addrs_size=args.saved_addrs_size,
-        )
+        if args.expand_only:
+            result = expand_binary(
+                args.input,
+                args.output,
+                shadow_size=args.shadow_size,
+                saved_addrs_size=args.saved_addrs_size,
+            )
+        else:
+            result = inject_entry_trampolines(
+                args.input,
+                args.output,
+                shadow_size=args.shadow_size,
+                saved_addrs_size=args.saved_addrs_size,
+            )
     except Exception as exc:
         parser.exit(1, f"error: {exc}\n")
 
@@ -30,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shstk-injector",
-        description="Add .shadow and .saved_addrs sections to an ELF binary.",
+        description="Inject entry trampolines that save return addresses in an ELF binary.",
     )
     parser.add_argument("input", type=Path, help="input ELF binary")
     parser.add_argument("output", type=Path, help="rewritten output binary")
@@ -45,6 +57,11 @@ def _make_parser() -> argparse.ArgumentParser:
         type=_parse_int,
         default=0x1000,
         help="size of the writable .saved_addrs section; accepts decimal or 0x-prefixed values",
+    )
+    parser.add_argument(
+        "--expand-only",
+        action="store_true",
+        help="only add .shadow and .saved_addrs without writing entry trampolines",
     )
     parser.add_argument(
         "--version",
@@ -64,7 +81,7 @@ def _parse_int(value: str) -> int:
     return parsed
 
 
-def _print_result(result: ExpansionResult) -> None:
+def _print_result(result: ExpansionResult | EntryInjectionResult) -> None:
     print(f"wrote {result.output_path}")
     for section in (result.shadow, result.saved_addrs):
         flags = ",".join(section.flags)
@@ -75,6 +92,10 @@ def _print_result(result: ExpansionResult) -> None:
             f"size=0x{section.size:x} "
             f"flags={flags}"
         )
+    if isinstance(result, EntryInjectionResult):
+        print(f"entry trampolines: {len(result.trampolines)}")
+        if result.skipped:
+            print(f"skipped functions: {len(result.skipped)}")
 
 
 if __name__ == "__main__":
