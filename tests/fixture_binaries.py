@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import unittest
 
-from shstk_injector.entry_trampoline import inject_entry_trampolines
+from shstk_injector.inject import inject_entry_trampolines
 
 
 TESTS_DIR = Path(__file__).resolve().parent

@@ -6,11 +6,8 @@ import argparse
 from pathlib import Path
 
 from shstk_injector import __version__
-from shstk_injector.entry_trampoline import (
-    EntryInjectionResult,
-    inject_entry_trampolines,
-)
 from shstk_injector.expand import ExpansionResult, expand_binary
+from shstk_injector.inject import EntryInjectionResult, inject_entry_trampolines
 
 
 def main(argv: list[str] | None = None) -> int:
