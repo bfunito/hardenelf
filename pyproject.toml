@@ -13,6 +13,9 @@ dependencies = [
 [project.scripts]
 shstk-injector = "shstk_injector.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["shstk_injector*"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
