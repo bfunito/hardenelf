@@ -22,6 +22,7 @@ from shstk_injector.expand import (
     expand_binary,
 )
 from shstk_injector.return_trampoline import (
+    ReturnAddressAction,
     ReturnSite,
     ReturnTrampoline,
     build_return_trampoline,
@@ -81,12 +82,17 @@ def inject_trampolines(
     *,
     shadow_size: int = 0x1000,
     saved_addrs_size: int = 0x1000,
+    return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
+    crash_message: str | bytes | None = None,
 ) -> InjectionResult:
     """Expand an ELF binary and patch function entries and returns.
 
     The first eight bytes of ``.saved_addrs`` hold a runtime cursor. Saved
     return addresses start immediately after that cursor.
     """
+
+    action = _normalize_return_address_action(return_address_action)
+    crash_message_bytes = _normalize_crash_message(action, crash_message)
 
     disassembler = make_disassembler()
     assembler = make_assembler()
@@ -150,6 +156,8 @@ def inject_trampolines(
                     return_site=return_site,
                     trampoline_address=next_shadow_cursor,
                     saved_addrs_address=saved_addrs.virtual_address,
+                    action=action,
+                    crash_message=crash_message_bytes,
                 )
                 return_body = pad_to_alignment(return_body)
                 return_bodies.append((return_site, next_shadow_cursor, return_body))
@@ -209,6 +217,8 @@ def inject_entry_trampolines(
     *,
     shadow_size: int = 0x1000,
     saved_addrs_size: int = 0x1000,
+    return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
+    crash_message: str | bytes | None = None,
 ) -> InjectionResult:
     """Backward-compatible name for the full entry and return injector."""
 
@@ -217,7 +227,34 @@ def inject_entry_trampolines(
         output_path,
         shadow_size=shadow_size,
         saved_addrs_size=saved_addrs_size,
+        return_address_action=return_address_action,
+        crash_message=crash_message,
     )
+
+
+def _normalize_return_address_action(
+    action: ReturnAddressAction | str,
+) -> ReturnAddressAction:
+    if isinstance(action, ReturnAddressAction):
+        return action
+    try:
+        return ReturnAddressAction(action)
+    except ValueError as exc:
+        supported = ", ".join(item.value for item in ReturnAddressAction)
+        raise ValueError(f"return address action must be one of: {supported}") from exc
+
+
+def _normalize_crash_message(
+    action: ReturnAddressAction,
+    crash_message: str | bytes | None,
+) -> bytes | None:
+    if crash_message is None:
+        return None
+    if action is not ReturnAddressAction.COMPARE_CRASH:
+        raise ValueError("crash messages are only supported with compare-crash mode")
+    if isinstance(crash_message, str):
+        return crash_message.encode()
+    return bytes(crash_message)
 
 
 def _iter_function_symbols(binary: lief.ELF.Binary) -> Iterable[_FunctionSymbol]:

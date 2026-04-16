@@ -8,11 +8,17 @@ from pathlib import Path
 from shstk_injector import __version__
 from shstk_injector.expand import ExpansionResult, expand_binary
 from shstk_injector.inject import EntryInjectionResult, inject_entry_trampolines
+from shstk_injector.return_trampoline import ReturnAddressAction
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _make_parser()
     args = parser.parse_args(argv)
+    if (
+        args.crash_message is not None
+        and args.return_address_action != ReturnAddressAction.COMPARE_CRASH.value
+    ):
+        parser.error("--crash-message requires --return-address-action compare-crash")
 
     try:
         if args.expand_only:
@@ -28,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 shadow_size=args.shadow_size,
                 saved_addrs_size=args.saved_addrs_size,
+                return_address_action=args.return_address_action,
+                crash_message=args.crash_message,
             )
     except Exception as exc:
         parser.exit(1, f"error: {exc}\n")
@@ -39,7 +47,10 @@ def main(argv: list[str] | None = None) -> int:
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shstk-injector",
-        description="Inject trampolines that save and restore return addresses in an ELF binary.",
+        description=(
+            "Inject trampolines that save and protect return addresses in an "
+            "ELF binary."
+        ),
     )
     parser.add_argument("input", type=Path, help="input ELF binary")
     parser.add_argument("output", type=Path, help="rewritten output binary")
@@ -59,6 +70,19 @@ def _make_parser() -> argparse.ArgumentParser:
         "--expand-only",
         action="store_true",
         help="only add .shadow and .saved_addrs without writing entry trampolines",
+    )
+    parser.add_argument(
+        "--return-address-action",
+        choices=[action.value for action in ReturnAddressAction],
+        default=ReturnAddressAction.RESTORE.value,
+        help=(
+            "return-site behavior: restore saved return addresses, or compare and "
+            "crash on mismatch"
+        ),
+    )
+    parser.add_argument(
+        "--crash-message",
+        help="message to write to stderr before crashing in compare-crash mode",
     )
     parser.add_argument(
         "--version",

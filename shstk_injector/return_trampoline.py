@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 import lief
@@ -17,6 +18,13 @@ from shstk_injector.x86 import (
     is_return_instruction,
     ranges_overlap,
 )
+
+
+class ReturnAddressAction(str, Enum):
+    """How return trampolines handle saved return addresses."""
+
+    RESTORE = "restore"
+    COMPARE_CRASH = "compare-crash"
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,8 @@ def build_return_trampoline(
     return_site: ReturnSite,
     trampoline_address: int,
     saved_addrs_address: int,
+    action: ReturnAddressAction = ReturnAddressAction.RESTORE,
+    crash_message: bytes | None = None,
 ) -> bytes:
     relocated = bytearray()
     for instruction in return_site.instructions:
@@ -101,8 +111,28 @@ def build_return_trampoline(
         )
         relocated.extend(relocated_instruction)
 
-    restore_address = trampoline_address + len(relocated)
-    restore = assemble(
+    check_address = trampoline_address + len(relocated)
+    if action is ReturnAddressAction.RESTORE:
+        check = _build_restore_block(assembler, check_address, saved_addrs_address)
+    elif action is ReturnAddressAction.COMPARE_CRASH:
+        check = _build_compare_crash_block(
+            assembler,
+            check_address,
+            saved_addrs_address,
+            crash_message,
+        )
+    else:
+        raise ValueError(f"unsupported return address action: {action}")
+
+    return bytes(relocated) + check + bytes(return_site.ret_instruction.bytes)
+
+
+def _build_restore_block(
+    assembler: Any,
+    block_address: int,
+    saved_addrs_address: int,
+) -> bytes:
+    return assemble(
         assembler,
         f"""
             mov r11, 0x{saved_addrs_address:x}
@@ -112,9 +142,54 @@ def build_return_trampoline(
             mov r10, qword ptr [r10]
             mov qword ptr [rsp], r10
         """,
-        restore_address,
+        block_address,
     )
-    return bytes(relocated) + restore + bytes(return_site.ret_instruction.bytes)
+
+
+def _build_compare_crash_block(
+    assembler: Any,
+    block_address: int,
+    saved_addrs_address: int,
+    crash_message: bytes | None,
+) -> bytes:
+    message_block = ""
+    if crash_message:
+        message_block = f"""
+            mov eax, 1
+            mov edi, 2
+            lea rsi, qword ptr [rip + crash_message]
+            mov edx, {len(crash_message)}
+            syscall
+        """
+
+    data_block = ""
+    if crash_message:
+        data_block = f"""
+            crash_message:
+            {_byte_directive(crash_message)}
+        """
+
+    return assemble(
+        assembler,
+        f"""
+            mov r11, 0x{saved_addrs_address:x}
+            mov r10, qword ptr [r11]
+            sub r10, 8
+            mov qword ptr [r11], r10
+            mov r10, qword ptr [r10]
+            cmp qword ptr [rsp], r10
+            je return_address_ok
+            {message_block}
+            ud2
+            {data_block}
+        return_address_ok:
+        """,
+        block_address,
+    )
+
+
+def _byte_directive(data: bytes) -> str:
+    return ".byte " + ", ".join(f"0x{byte:02x}" for byte in data)
 
 
 def _collect_return_site_at_index(

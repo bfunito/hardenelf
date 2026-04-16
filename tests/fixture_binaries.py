@@ -7,6 +7,7 @@ import subprocess
 import unittest
 
 from shstk_injector.inject import inject_entry_trampolines
+from shstk_injector.return_trampoline import ReturnAddressAction
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -47,6 +48,8 @@ def patch_fixture(
     *,
     shadow_size: int = 0x3000,
     saved_addrs_size: int = 0x2000,
+    return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
+    crash_message: str | bytes | None = None,
 ) -> tuple[Path, Path]:
     build_fixtures(test_case)
     require_injector_dependencies(test_case)
@@ -60,6 +63,8 @@ def patch_fixture(
         output_path,
         shadow_size=shadow_size,
         saved_addrs_size=saved_addrs_size,
+        return_address_action=return_address_action,
+        crash_message=crash_message,
     )
     return input_path, output_path
 
