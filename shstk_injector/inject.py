@@ -32,6 +32,7 @@ from shstk_injector.x86 import (
     NEAR_JUMP_SIZE,
     SkipFunction,
     ensure_x86_64,
+    is_pie_binary,
     make_assembler,
     make_disassembler,
     make_jump,
@@ -63,6 +64,7 @@ class InjectionResult:
     trampolines: tuple[EntryTrampoline, ...]
     skipped: tuple[SkippedFunction, ...]
     return_trampolines: tuple[ReturnTrampoline, ...] = ()
+    is_pie: bool = False
 
 
 EntryInjectionResult = InjectionResult
@@ -109,6 +111,8 @@ def inject_trampolines(
     if binary is None or not isinstance(binary, lief.ELF.Binary):
         raise ValueError(f"LIEF could not parse expanded binary {output_file}")
     ensure_x86_64(binary)
+    is_pie = is_pie_binary(binary)
+    allow_absolute_saved_addrs = not is_pie
 
     shadow = _require_section(binary, SHADOW_SECTION)
     saved_addrs = _require_section(binary, SAVED_ADDRS_SECTION)
@@ -145,6 +149,7 @@ def inject_trampolines(
                 trampoline_address=shadow_cursor,
                 return_address=function.address + entry_overwritten_size,
                 saved_addrs_address=saved_addrs.virtual_address,
+                allow_absolute_saved_addrs=allow_absolute_saved_addrs,
             )
             entry_body = pad_to_alignment(entry_body)
             return_bodies: list[tuple[ReturnSite, int, bytes]] = []
@@ -158,6 +163,7 @@ def inject_trampolines(
                     saved_addrs_address=saved_addrs.virtual_address,
                     action=action,
                     crash_message=crash_message_bytes,
+                    allow_absolute_saved_addrs=allow_absolute_saved_addrs,
                 )
                 return_body = pad_to_alignment(return_body)
                 return_bodies.append((return_site, next_shadow_cursor, return_body))
@@ -208,6 +214,7 @@ def inject_trampolines(
         trampolines=tuple(trampolines),
         skipped=tuple(skipped),
         return_trampolines=tuple(return_trampolines),
+        is_pie=is_pie,
     )
 
 

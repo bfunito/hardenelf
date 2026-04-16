@@ -14,6 +14,7 @@ from shstk_injector.x86 import (
     assemble,
     ensure_relocatable_instruction,
     function_code_limit,
+    load_r11_with_address,
     make_jump,
 )
 
@@ -60,15 +61,29 @@ def build_entry_trampoline(
     trampoline_address: int,
     return_address: int,
     saved_addrs_address: int,
+    allow_absolute_saved_addrs: bool = True,
 ) -> bytes:
-    prologue = assemble(
+    register_save = assemble(
         assembler,
-        f"""
+        """
             pushfq
             push rax
             push r10
             push r11
-            mov r11, 0x{saved_addrs_address:x}
+        """,
+        trampoline_address,
+    )
+    saved_addrs_load_address = trampoline_address + len(register_save)
+    saved_addrs_load = load_r11_with_address(
+        assembler,
+        saved_addrs_load_address,
+        saved_addrs_address,
+        allow_absolute=allow_absolute_saved_addrs,
+    )
+    prologue_tail_address = saved_addrs_load_address + len(saved_addrs_load)
+    prologue_tail = assemble(
+        assembler,
+        """
             mov r10, qword ptr [r11]
             test r10, r10
             jne cursor_ready
@@ -83,8 +98,9 @@ def build_entry_trampoline(
             pop rax
             popfq
         """,
-        trampoline_address,
+        prologue_tail_address,
     )
+    prologue = register_save + saved_addrs_load + prologue_tail
 
     relocated_address = trampoline_address + len(prologue)
     relocated = bytearray()

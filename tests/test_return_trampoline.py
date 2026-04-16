@@ -1,5 +1,7 @@
 import unittest
 
+import lief
+
 from tests.fixture_binaries import patch_fixture, run_binary
 from shstk_injector.return_trampoline import ReturnAddressAction
 
@@ -8,6 +10,14 @@ class ReturnTrampolineTests(unittest.TestCase):
     def test_patched_binary_restores_corrupted_return_address(self) -> None:
         input_path, output_path = patch_fixture(self, "return_restore")
 
+        self.assertNotEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+
+    def test_patched_pie_binary_restores_corrupted_return_address(self) -> None:
+        input_path, output_path = patch_fixture(self, "return_restore_pie")
+
+        self.assertTrue(_is_pie(input_path))
+        self.assertTrue(_is_pie(output_path))
         self.assertNotEqual(run_binary(input_path).returncode, 0)
         self.assertEqual(run_binary(output_path).returncode, 0)
 
@@ -42,6 +52,12 @@ class ReturnTrampolineTests(unittest.TestCase):
         result = run_binary(output_path)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stderr, message)
+
+
+def _is_pie(path) -> bool:
+    binary = lief.parse(path)
+    assert isinstance(binary, lief.ELF.Binary)
+    return bool(binary.is_pie)
 
 
 if __name__ == "__main__":

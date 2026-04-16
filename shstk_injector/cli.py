@@ -114,6 +114,7 @@ def _print_result(result: ExpansionResult | EntryInjectionResult) -> None:
             f"flags={flags}"
         )
     if isinstance(result, EntryInjectionResult):
+        print(f"pie: {'yes' if result.is_pie else 'no'}")
         print(f"entry trampolines: {len(result.trampolines)}")
         print(f"return trampolines: {len(result.return_trampolines)}")
         if result.skipped:

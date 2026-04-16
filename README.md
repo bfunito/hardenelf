@@ -1,10 +1,10 @@
 # SHSTK Injector
 
 Prototype binary rewriter for injecting a software shadow stack into non-stripped
-ELF binaries. The tool expands the target binary with `.shadow` and
-`.saved_addrs` sections, then patches function entry and return sites with
-trampolines that save return addresses and either restore them or validate them
-before returning.
+ELF binaries, including PIE executables. The tool expands the target binary with
+`.shadow` and `.saved_addrs` sections, then patches function entry and return
+sites with trampolines that save return addresses and either restore them or
+validate them before returning.
 
 ## Usage
 

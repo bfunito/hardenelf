@@ -16,6 +16,7 @@ from shstk_injector.x86 import (
     ensure_relocatable_instruction,
     function_code_limit,
     is_return_instruction,
+    load_r11_with_address,
     ranges_overlap,
 )
 
@@ -101,6 +102,7 @@ def build_return_trampoline(
     saved_addrs_address: int,
     action: ReturnAddressAction = ReturnAddressAction.RESTORE,
     crash_message: bytes | None = None,
+    allow_absolute_saved_addrs: bool = True,
 ) -> bytes:
     relocated = bytearray()
     for instruction in return_site.instructions:
@@ -113,13 +115,19 @@ def build_return_trampoline(
 
     check_address = trampoline_address + len(relocated)
     if action is ReturnAddressAction.RESTORE:
-        check = _build_restore_block(assembler, check_address, saved_addrs_address)
+        check = _build_restore_block(
+            assembler,
+            check_address,
+            saved_addrs_address,
+            allow_absolute_saved_addrs=allow_absolute_saved_addrs,
+        )
     elif action is ReturnAddressAction.COMPARE_CRASH:
         check = _build_compare_crash_block(
             assembler,
             check_address,
             saved_addrs_address,
             crash_message,
+            allow_absolute_saved_addrs=allow_absolute_saved_addrs,
         )
     else:
         raise ValueError(f"unsupported return address action: {action}")
@@ -131,19 +139,28 @@ def _build_restore_block(
     assembler: Any,
     block_address: int,
     saved_addrs_address: int,
+    *,
+    allow_absolute_saved_addrs: bool,
 ) -> bytes:
-    return assemble(
+    saved_addrs_load = load_r11_with_address(
         assembler,
-        f"""
-            mov r11, 0x{saved_addrs_address:x}
+        block_address,
+        saved_addrs_address,
+        allow_absolute=allow_absolute_saved_addrs,
+    )
+    tail_address = block_address + len(saved_addrs_load)
+    tail = assemble(
+        assembler,
+        """
             mov r10, qword ptr [r11]
             sub r10, 8
             mov qword ptr [r11], r10
             mov r10, qword ptr [r10]
             mov qword ptr [rsp], r10
         """,
-        block_address,
+        tail_address,
     )
+    return saved_addrs_load + tail
 
 
 def _build_compare_crash_block(
@@ -151,6 +168,8 @@ def _build_compare_crash_block(
     block_address: int,
     saved_addrs_address: int,
     crash_message: bytes | None,
+    *,
+    allow_absolute_saved_addrs: bool,
 ) -> bytes:
     message_block = ""
     if crash_message:
@@ -169,10 +188,16 @@ def _build_compare_crash_block(
             {_byte_directive(crash_message)}
         """
 
-    return assemble(
+    saved_addrs_load = load_r11_with_address(
+        assembler,
+        block_address,
+        saved_addrs_address,
+        allow_absolute=allow_absolute_saved_addrs,
+    )
+    tail_address = block_address + len(saved_addrs_load)
+    tail = assemble(
         assembler,
         f"""
-            mov r11, 0x{saved_addrs_address:x}
             mov r10, qword ptr [r11]
             sub r10, 8
             mov qword ptr [r11], r10
@@ -184,8 +209,9 @@ def _build_compare_crash_block(
             {data_block}
         return_address_ok:
         """,
-        block_address,
+        tail_address,
     )
+    return saved_addrs_load + tail
 
 
 def _byte_directive(data: bytes) -> str:
