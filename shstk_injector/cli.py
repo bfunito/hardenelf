@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shstk-injector",
-        description="Inject entry trampolines that save return addresses in an ELF binary.",
+        description="Inject trampolines that save and restore return addresses in an ELF binary.",
     )
     parser.add_argument("input", type=Path, help="input ELF binary")
     parser.add_argument("output", type=Path, help="rewritten output binary")
@@ -94,6 +94,7 @@ def _print_result(result: ExpansionResult | EntryInjectionResult) -> None:
         )
     if isinstance(result, EntryInjectionResult):
         print(f"entry trampolines: {len(result.trampolines)}")
+        print(f"return trampolines: {len(result.return_trampolines)}")
         if result.skipped:
             print(f"skipped functions: {len(result.skipped)}")
 

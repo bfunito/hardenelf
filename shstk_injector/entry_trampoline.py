@@ -1,4 +1,4 @@
-"""Entry trampoline injection for x86-64 ELF function symbols."""
+"""Software shadow-stack trampoline injection for x86-64 ELF function symbols."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from shstk_injector.expand import (
 )
 
 
-ENTRY_JUMP_SIZE = 5
+NEAR_JUMP_SIZE = 5
 SHADOW_STACK_CURSOR_SIZE = 8
 _RIP_OPERAND_RE = re.compile(r"\brip(?:\s*([+-])\s*(0x[0-9a-fA-F]+|\d+))?")
 _SKIPPED_ENTRY_SYMBOLS = frozenset({"_start"})
@@ -38,6 +38,19 @@ class EntryTrampoline:
 
 
 @dataclass(frozen=True)
+class ReturnTrampoline:
+    """Summary of a return trampoline written for one return site."""
+
+    function_name: str
+    function_address: int
+    return_address: int
+    patch_address: int
+    trampoline_address: int
+    overwritten_size: int
+    original_bytes: bytes
+
+
+@dataclass(frozen=True)
 class SkippedFunction:
     """A function symbol that could not be patched safely."""
 
@@ -48,13 +61,14 @@ class SkippedFunction:
 
 @dataclass(frozen=True)
 class EntryInjectionResult:
-    """Summary returned after adding entry trampolines."""
+    """Summary returned after adding entry and return trampolines."""
 
     output_path: Path
     shadow: AddedSection
     saved_addrs: AddedSection
     trampolines: tuple[EntryTrampoline, ...]
     skipped: tuple[SkippedFunction, ...]
+    return_trampolines: tuple[ReturnTrampoline, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,6 +79,26 @@ class _FunctionSymbol:
     section: lief.ELF.Section
 
 
+@dataclass(frozen=True)
+class _ReturnSite:
+    instructions: tuple[Any, ...]
+    ret_instruction: Any
+
+    @property
+    def patch_address(self) -> int:
+        return self.instructions[0].address
+
+    @property
+    def overwritten_size(self) -> int:
+        instruction_size = sum(instruction.size for instruction in self.instructions)
+        return instruction_size + self.ret_instruction.size
+
+    @property
+    def original_bytes(self) -> bytes:
+        body = b"".join(bytes(instruction.bytes) for instruction in self.instructions)
+        return body + bytes(self.ret_instruction.bytes)
+
+
 def inject_entry_trampolines(
     input_path: Path | str,
     output_path: Path | str,
@@ -72,7 +106,7 @@ def inject_entry_trampolines(
     shadow_size: int = 0x1000,
     saved_addrs_size: int = 0x1000,
 ) -> EntryInjectionResult:
-    """Expand an ELF binary and patch function entries to save return addresses.
+    """Expand an ELF binary and patch function entries and returns.
 
     The first eight bytes of ``.saved_addrs`` hold a runtime cursor. Saved
     return addresses start immediately after that cursor.
@@ -102,20 +136,56 @@ def inject_entry_trampolines(
     shadow_cursor = shadow.virtual_address
     shadow_end = shadow.virtual_address + shadow.size
     trampolines: list[EntryTrampoline] = []
+    return_trampolines: list[ReturnTrampoline] = []
     skipped: list[SkippedFunction] = []
 
     for function in _iter_function_symbols(binary):
         try:
-            instructions = _collect_entry_instructions(binary, disassembler, function)
-            body = _build_entry_trampoline(
+            entry_instructions = _collect_entry_instructions(
+                binary,
+                disassembler,
+                function,
+            )
+            return_sites = _collect_return_sites(binary, disassembler, function)
+
+            entry_overwritten_size = sum(
+                instruction.size for instruction in entry_instructions
+            )
+            entry_patch_range = (
+                function.address,
+                function.address + entry_overwritten_size,
+            )
+            for return_site in return_sites:
+                return_patch_range = (
+                    return_site.patch_address,
+                    return_site.patch_address + return_site.overwritten_size,
+                )
+                if _ranges_overlap(entry_patch_range, return_patch_range):
+                    raise _SkipFunction("entry and return patches overlap")
+
+            entry_body = _build_entry_trampoline(
                 assembler=assembler,
-                instructions=instructions,
+                instructions=entry_instructions,
                 trampoline_address=shadow_cursor,
-                return_address=function.address + sum(insn.size for insn in instructions),
+                return_address=function.address + entry_overwritten_size,
                 saved_addrs_address=saved_addrs.virtual_address,
             )
-            body = _pad_to_alignment(body)
-            if shadow_cursor + len(body) > shadow_end:
+            entry_body = _pad_to_alignment(entry_body)
+            return_bodies: list[tuple[_ReturnSite, int, bytes]] = []
+            next_shadow_cursor = shadow_cursor + len(entry_body)
+
+            for return_site in return_sites:
+                return_body = _build_return_trampoline(
+                    assembler=assembler,
+                    return_site=return_site,
+                    trampoline_address=next_shadow_cursor,
+                    saved_addrs_address=saved_addrs.virtual_address,
+                )
+                return_body = _pad_to_alignment(return_body)
+                return_bodies.append((return_site, next_shadow_cursor, return_body))
+                next_shadow_cursor += len(return_body)
+
+            if next_shadow_cursor > shadow_end:
                 skipped.append(
                     SkippedFunction(
                         function.name,
@@ -125,11 +195,10 @@ def inject_entry_trampolines(
                 )
                 continue
 
-            overwritten_size = sum(insn.size for insn in instructions)
             entry_patch = _make_jump(function.address, shadow_cursor)
-            entry_patch += b"\x90" * (overwritten_size - ENTRY_JUMP_SIZE)
+            entry_patch += b"\x90" * (entry_overwritten_size - NEAR_JUMP_SIZE)
 
-            binary.patch_address(shadow_cursor, list(body))
+            binary.patch_address(shadow_cursor, list(entry_body))
             binary.patch_address(function.address, list(entry_patch))
 
             trampolines.append(
@@ -137,16 +206,42 @@ def inject_entry_trampolines(
                     function_name=function.name,
                     function_address=function.address,
                     trampoline_address=shadow_cursor,
-                    overwritten_size=overwritten_size,
-                    original_bytes=b"".join(bytes(insn.bytes) for insn in instructions),
+                    overwritten_size=entry_overwritten_size,
+                    original_bytes=b"".join(
+                        bytes(instruction.bytes) for instruction in entry_instructions
+                    ),
                 )
             )
-            shadow_cursor += len(body)
+
+            for return_site, return_trampoline_address, return_body in return_bodies:
+                return_patch = _make_jump(
+                    return_site.patch_address,
+                    return_trampoline_address,
+                )
+                return_patch += b"\x90" * (
+                    return_site.overwritten_size - NEAR_JUMP_SIZE
+                )
+
+                binary.patch_address(return_trampoline_address, list(return_body))
+                binary.patch_address(return_site.patch_address, list(return_patch))
+                return_trampolines.append(
+                    ReturnTrampoline(
+                        function_name=function.name,
+                        function_address=function.address,
+                        return_address=return_site.ret_instruction.address,
+                        patch_address=return_site.patch_address,
+                        trampoline_address=return_trampoline_address,
+                        overwritten_size=return_site.overwritten_size,
+                        original_bytes=return_site.original_bytes,
+                    )
+                )
+
+            shadow_cursor = next_shadow_cursor
         except _SkipFunction as exc:
             skipped.append(SkippedFunction(function.name, function.address, str(exc)))
 
     if not trampolines:
-        raise ValueError("no function entry trampolines were written")
+        raise ValueError("no complete function trampolines were written")
 
     binary.write(output_file)
     rewritten = lief.parse(output_file)
@@ -159,6 +254,7 @@ def inject_entry_trampolines(
         saved_addrs=_section_summary(_require_section(rewritten, SAVED_ADDRS_SECTION)),
         trampolines=tuple(trampolines),
         skipped=tuple(skipped),
+        return_trampolines=tuple(return_trampolines),
     )
 
 
@@ -227,10 +323,8 @@ def _collect_entry_instructions(
     disassembler: Any,
     function: _FunctionSymbol,
 ) -> list[Any]:
-    max_size = function.section.virtual_address + function.section.size - function.address
-    if function.size > 0:
-        max_size = min(max_size, function.size)
-    if max_size < ENTRY_JUMP_SIZE:
+    max_size = _function_code_limit(function)
+    if max_size < NEAR_JUMP_SIZE:
         raise _SkipFunction("function is smaller than a near jump")
 
     code_size = min(max_size, 64)
@@ -242,13 +336,94 @@ def _collect_entry_instructions(
         _ensure_relocatable_entry_instruction(instruction)
         instructions.append(instruction)
         total_size += instruction.size
-        if total_size >= ENTRY_JUMP_SIZE:
+        if total_size >= NEAR_JUMP_SIZE:
             return instructions
 
     raise _SkipFunction("could not disassemble enough entry bytes")
 
 
+def _collect_return_sites(
+    binary: lief.ELF.Binary,
+    disassembler: Any,
+    function: _FunctionSymbol,
+) -> list[_ReturnSite]:
+    if function.size <= 0:
+        raise _SkipFunction("function size is unknown")
+
+    max_size = _function_code_limit(function)
+    if max_size < NEAR_JUMP_SIZE:
+        raise _SkipFunction("function is smaller than a near jump")
+
+    code = bytes(binary.get_content_from_virtual_address(function.address, max_size))
+    instructions = list(disassembler.disasm(code, function.address))
+    if not instructions:
+        raise _SkipFunction("could not disassemble function body")
+
+    ret_indexes = [
+        index
+        for index, instruction in enumerate(instructions)
+        if _is_return_instruction(instruction)
+    ]
+    if not ret_indexes:
+        raise _SkipFunction("function has no return instruction")
+
+    return_sites = [
+        _collect_return_site_at_index(instructions, ret_index)
+        for ret_index in ret_indexes
+    ]
+    _ensure_non_overlapping_return_sites(return_sites)
+    return return_sites
+
+
+def _collect_return_site_at_index(
+    instructions: list[Any],
+    ret_index: int,
+) -> _ReturnSite:
+    ret_instruction = instructions[ret_index]
+    selected: list[Any] = []
+    total_size = ret_instruction.size
+
+    for instruction in reversed(instructions[:ret_index]):
+        _ensure_relocatable_return_instruction(instruction)
+        selected.append(instruction)
+        total_size += instruction.size
+        if total_size >= NEAR_JUMP_SIZE:
+            return _ReturnSite(tuple(reversed(selected)), ret_instruction)
+
+    raise _SkipFunction(
+        f"could not collect enough bytes before return at 0x{ret_instruction.address:x}"
+    )
+
+
+def _ensure_non_overlapping_return_sites(return_sites: list[_ReturnSite]) -> None:
+    ranges: list[tuple[int, int]] = []
+    for return_site in return_sites:
+        current_range = (
+            return_site.patch_address,
+            return_site.patch_address + return_site.overwritten_size,
+        )
+        if any(_ranges_overlap(current_range, seen_range) for seen_range in ranges):
+            raise _SkipFunction("return patch ranges overlap")
+        ranges.append(current_range)
+
+
+def _function_code_limit(function: _FunctionSymbol) -> int:
+    section_limit = function.section.virtual_address + function.section.size
+    max_size = section_limit - function.address
+    if function.size > 0:
+        max_size = min(max_size, function.size)
+    return max_size
+
+
 def _ensure_relocatable_entry_instruction(instruction: Any) -> None:
+    _ensure_relocatable_instruction(instruction, "entry")
+
+
+def _ensure_relocatable_return_instruction(instruction: Any) -> None:
+    _ensure_relocatable_instruction(instruction, "return")
+
+
+def _ensure_relocatable_instruction(instruction: Any, context: str) -> None:
     import capstone
 
     blocked_groups = (
@@ -259,8 +434,14 @@ def _ensure_relocatable_entry_instruction(instruction: Any) -> None:
     )
     if any(instruction.group(group) for group in blocked_groups):
         raise _SkipFunction(
-            f"entry instruction {instruction.mnemonic} changes control flow"
+            f"{context} instruction {instruction.mnemonic} changes control flow"
         )
+
+
+def _is_return_instruction(instruction: Any) -> bool:
+    import capstone
+
+    return instruction.group(capstone.CS_GRP_RET)
 
 
 def _build_entry_trampoline(
@@ -308,6 +489,38 @@ def _build_entry_trampoline(
 
     jump_back_address = relocated_address + len(relocated)
     return prologue + bytes(relocated) + _make_jump(jump_back_address, return_address)
+
+
+def _build_return_trampoline(
+    *,
+    assembler: Any,
+    return_site: _ReturnSite,
+    trampoline_address: int,
+    saved_addrs_address: int,
+) -> bytes:
+    relocated = bytearray()
+    for instruction in return_site.instructions:
+        relocated_instruction = _relocate_instruction(
+            assembler,
+            instruction,
+            trampoline_address + len(relocated),
+        )
+        relocated.extend(relocated_instruction)
+
+    restore_address = trampoline_address + len(relocated)
+    restore = _assemble(
+        assembler,
+        f"""
+            mov r11, 0x{saved_addrs_address:x}
+            mov r10, qword ptr [r11]
+            sub r10, 8
+            mov qword ptr [r11], r10
+            mov r10, qword ptr [r10]
+            mov qword ptr [rsp], r10
+        """,
+        restore_address,
+    )
+    return bytes(relocated) + restore + bytes(return_site.ret_instruction.bytes)
 
 
 def _relocate_instruction(assembler: Any, instruction: Any, new_address: int) -> bytes:
@@ -374,10 +587,14 @@ def _normalize_assembly(assembly: str) -> str:
 
 
 def _make_jump(source: int, target: int) -> bytes:
-    displacement = target - (source + ENTRY_JUMP_SIZE)
+    displacement = target - (source + NEAR_JUMP_SIZE)
     if not -(2**31) <= displacement < 2**31:
         raise _SkipFunction("relative jump target is outside the signed 32-bit range")
     return b"\xe9" + struct.pack("<i", displacement)
+
+
+def _ranges_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
 
 
 def _pad_to_alignment(body: bytes, alignment: int = 0x10) -> bytes:

@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+import shutil
+import subprocess
+import unittest
+
+from shstk_injector.entry_trampoline import inject_entry_trampolines
+
+
+TESTS_DIR = Path(__file__).resolve().parent
+BIN_DIR = TESTS_DIR / "bin"
+PATCHED_DIR = TESTS_DIR / "patched"
+
+
+def build_fixtures(test_case: unittest.TestCase) -> None:
+    if shutil.which("make") is None:
+        test_case.skipTest("make is not available")
+    if shutil.which("gcc") is None:
+        test_case.skipTest("gcc is not available")
+
+    result = subprocess.run(
+        ["make", "-C", str(TESTS_DIR), "all"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        test_case.skipTest(f"could not build C fixtures: {result.stderr}")
+
+
+def require_injector_dependencies(test_case: unittest.TestCase) -> None:
+    for module_name, package_name in (
+        ("capstone", "capstone"),
+        ("keystone", "keystone-engine"),
+    ):
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            test_case.skipTest(f"{package_name} is not installed")
+
+
+def patch_fixture(
+    test_case: unittest.TestCase,
+    name: str,
+    *,
+    shadow_size: int = 0x3000,
+    saved_addrs_size: int = 0x2000,
+) -> tuple[Path, Path]:
+    build_fixtures(test_case)
+    require_injector_dependencies(test_case)
+
+    input_path = BIN_DIR / name
+    output_path = PATCHED_DIR / f"{name}.patched"
+    output_path.unlink(missing_ok=True)
+
+    inject_entry_trampolines(
+        input_path,
+        output_path,
+        shadow_size=shadow_size,
+        saved_addrs_size=saved_addrs_size,
+    )
+    return input_path, output_path
+
+
+def run_binary(path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
