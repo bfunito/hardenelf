@@ -1,8 +1,9 @@
 # SHSTK Injector
 
-Prototype binary rewriter for injecting a software shadow stack into non-stripped
-ELF binaries, including PIE executables. The tool expands the target binary with
-`.shadow` and `.saved_addrs` sections, then patches function entry and return
+Prototype binary rewriter for injecting security hardening passes into
+non-stripped ELF binaries, including PIE executables. The current implementation
+ships one pipeline step, `shadow-stack`, which expands the target binary with
+`.shadow` and `.saved_addrs` sections and then patches function entry and return
 sites with trampolines that save return addresses and either restore them or
 validate them before returning.
 
@@ -14,14 +15,21 @@ Install the package in editable mode:
 python -m pip install -e .
 ```
 
-Rewrite an ELF binary:
+Rewrite an ELF binary with all implemented pipeline steps:
 
 ```bash
 shstk-injector ./input-binary ./patched-binary
 ```
 
-By default, return trampolines restore the saved return address. To compare the
-saved and live return addresses and crash on mismatch instead:
+Select a subset of the pipeline explicitly:
+
+```bash
+shstk-injector --step shadow-stack ./input-binary ./patched-binary
+```
+
+The current `shadow-stack` step still accepts its existing options. By default,
+return trampolines restore the saved return address. To compare the saved and
+live return addresses and crash on mismatch instead:
 
 ```bash
 shstk-injector --return-address-action compare-crash ./input-binary ./patched-binary
@@ -36,7 +44,7 @@ shstk-injector \
   ./input-binary ./patched-binary
 ```
 
-Only expand the binary with the injector sections:
+Only expand the binary with the sections required by the `shadow-stack` step:
 
 ```bash
 shstk-injector --expand-only ./input-binary ./expanded-binary
