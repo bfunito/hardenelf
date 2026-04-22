@@ -6,37 +6,37 @@ import argparse
 from pathlib import Path
 
 from shstk_injector import __version__
-from shstk_injector.expand import ExpansionResult, expand_binary
-from shstk_injector.inject import EntryInjectionResult, inject_entry_trampolines
+from shstk_injector.expand import ExpansionResult
+from shstk_injector.inject import EntryInjectionResult, PipelineResult, run_injection_pipeline
 from shstk_injector.return_trampoline import ReturnAddressAction
+from shstk_injector.steps import SHADOW_STACK_STEP, available_step_names
+from shstk_injector.steps.shadow_stack import ShadowStackStepOptions
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _make_parser()
     args = parser.parse_args(argv)
+    selected_steps = tuple(args.steps or available_step_names())
     if (
         args.crash_message is not None
         and args.return_address_action != ReturnAddressAction.COMPARE_CRASH.value
     ):
         parser.error("--crash-message requires --return-address-action compare-crash")
+    _validate_shadow_stack_selection(parser, args, selected_steps)
 
     try:
-        if args.expand_only:
-            result = expand_binary(
-                args.input,
-                args.output,
-                shadow_size=args.shadow_size,
-                saved_addrs_size=args.saved_addrs_size,
-            )
-        else:
-            result = inject_entry_trampolines(
-                args.input,
-                args.output,
+        result = run_injection_pipeline(
+            args.input,
+            args.output,
+            steps=selected_steps,
+            shadow_stack_options=ShadowStackStepOptions(
                 shadow_size=args.shadow_size,
                 saved_addrs_size=args.saved_addrs_size,
                 return_address_action=args.return_address_action,
                 crash_message=args.crash_message,
-            )
+                expand_only=args.expand_only,
+            ),
+        )
     except Exception as exc:
         parser.exit(1, f"error: {exc}\n")
 
@@ -54,6 +54,16 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("input", type=Path, help="input ELF binary")
     parser.add_argument("output", type=Path, help="rewritten output binary")
+    parser.add_argument(
+        "--step",
+        dest="steps",
+        action="append",
+        choices=available_step_names(),
+        help=(
+            "pipeline step to run; repeat to select a subset. "
+            "Defaults to all implemented steps in registry order"
+        ),
+    )
     parser.add_argument(
         "--shadow-size",
         type=_parse_int,
@@ -102,23 +112,61 @@ def _parse_int(value: str) -> int:
     return parsed
 
 
-def _print_result(result: ExpansionResult | EntryInjectionResult) -> None:
+def _validate_shadow_stack_selection(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    selected_steps: tuple[str, ...],
+) -> None:
+    if SHADOW_STACK_STEP in selected_steps:
+        return
+
+    shadow_stack_options_requested = (
+        args.expand_only
+        or args.shadow_size != 0x1000
+        or args.saved_addrs_size != 0x1000
+        or args.return_address_action != ReturnAddressAction.RESTORE.value
+        or args.crash_message is not None
+    )
+    if shadow_stack_options_requested:
+        parser.error("shadow-stack options require the shadow-stack pipeline step")
+
+
+def _print_result(result: PipelineResult) -> None:
     print(f"wrote {result.output_path}")
+    if len(result.steps) == 1:
+        _print_step_result(result.steps[0].result)
+        return
+
+    print(f"pipeline steps: {', '.join(step.name for step in result.steps)}")
+    for step in result.steps:
+        print(f"[{step.name}]")
+        _print_step_result(step.result, indent="  ")
+
+
+def _print_step_result(
+    result: ExpansionResult | EntryInjectionResult | object,
+    *,
+    indent: str = "",
+) -> None:
+    if not isinstance(result, (ExpansionResult, EntryInjectionResult)):
+        print(f"{indent}completed")
+        return
+
     for section in (result.shadow, result.saved_addrs):
         flags = ",".join(section.flags)
         print(
-            f"{section.name}: "
+            f"{indent}{section.name}: "
             f"va=0x{section.virtual_address:x} "
             f"offset=0x{section.file_offset:x} "
             f"size=0x{section.size:x} "
             f"flags={flags}"
         )
     if isinstance(result, EntryInjectionResult):
-        print(f"pie: {'yes' if result.is_pie else 'no'}")
-        print(f"entry trampolines: {len(result.trampolines)}")
-        print(f"return trampolines: {len(result.return_trampolines)}")
+        print(f"{indent}pie: {'yes' if result.is_pie else 'no'}")
+        print(f"{indent}entry trampolines: {len(result.trampolines)}")
+        print(f"{indent}return trampolines: {len(result.return_trampolines)}")
         if result.skipped:
-            print(f"skipped functions: {len(result.skipped)}")
+            print(f"{indent}skipped functions: {len(result.skipped)}")
 
 
 if __name__ == "__main__":
