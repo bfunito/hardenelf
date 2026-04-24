@@ -3,8 +3,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from safe_rng.step import RngPatcherStep, RngPatcherStepOptions
 from shstk_injector.pipeline import run_pipeline
-from shstk_injector.steps import SHADOW_STACK_STEP, available_step_names, build_steps
+from shstk_injector.steps import (
+    RNG_PATCHER_STEP,
+    SHADOW_STACK_STEP,
+    available_step_names,
+    build_steps,
+)
 from shstk_injector.steps.shadow_stack import ShadowStackStep, ShadowStackStepOptions
 
 
@@ -69,13 +75,23 @@ class StepRegistryTests(unittest.TestCase):
         assert isinstance(step, ShadowStackStep)
         self.assertTrue(step.options.expand_only)
 
+    def test_registry_builds_configured_rng_patcher_step(self) -> None:
+        step = build_steps(
+            (RNG_PATCHER_STEP,),
+            rng_patcher_options=RngPatcherStepOptions(library_name="custom.so"),
+        )[0]
+
+        self.assertIsInstance(step, RngPatcherStep)
+        assert isinstance(step, RngPatcherStep)
+        self.assertEqual(step.options.library_name, "custom.so")
+
     def test_registry_rejects_duplicate_steps(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be unique"):
             build_steps((SHADOW_STACK_STEP, SHADOW_STACK_STEP))
 
     def test_registry_rejects_unknown_steps(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown pipeline step"):
-            build_steps(("rng-patcher",))
+            build_steps(("format-string-checker",))
 
 
 if __name__ == "__main__":

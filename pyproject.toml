@@ -14,7 +14,10 @@ dependencies = [
 shstk-injector = "shstk_injector.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["shstk_injector*"]
+include = ["shstk_injector*", "safe_rng*"]
+
+[tool.setuptools.package-data]
+safe_rng = ["native/*.c"]
 
 [build-system]
 requires = ["setuptools>=68"]

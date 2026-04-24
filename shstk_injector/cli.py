@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from safe_rng.step import RngPatchResult
 from shstk_injector import __version__
 from shstk_injector.expand import ExpansionResult
 from shstk_injector.inject import EntryInjectionResult, PipelineResult, run_injection_pipeline
@@ -144,10 +145,18 @@ def _print_result(result: PipelineResult) -> None:
 
 
 def _print_step_result(
-    result: ExpansionResult | EntryInjectionResult | object,
+    result: ExpansionResult | EntryInjectionResult | RngPatchResult | object,
     *,
     indent: str = "",
 ) -> None:
+    if isinstance(result, RngPatchResult):
+        print(f"{indent}rng imports patched: {len(result.patched_imports)}")
+        if result.library_path is not None:
+            print(f"{indent}library: {result.library_path}")
+        if result.runpath:
+            print(f"{indent}runpath: {':'.join(result.runpath)}")
+        return
+
     if not isinstance(result, (ExpansionResult, EntryInjectionResult)):
         print(f"{indent}completed")
         return

@@ -5,6 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from safe_rng.step import (
+    RNG_PATCHER_STEP,
+    RngPatcherStep,
+    RngPatcherStepOptions,
+)
 from shstk_injector.pipeline import PipelineStep
 
 from .shadow_stack import (
@@ -27,6 +32,10 @@ _STEP_DEFINITIONS = (
         name=SHADOW_STACK_STEP,
         description=ShadowStackStep.description,
     ),
+    StepDefinition(
+        name=RNG_PATCHER_STEP,
+        description=RngPatcherStep.description,
+    ),
 )
 
 
@@ -46,16 +55,21 @@ def build_steps(
     step_names: Sequence[str] | None = None,
     *,
     shadow_stack_options: ShadowStackStepOptions | None = None,
+    rng_patcher_options: RngPatcherStepOptions | None = None,
 ) -> tuple[PipelineStep, ...]:
     """Instantiate the requested step sequence."""
 
     normalized_names = _normalize_step_names(step_names)
     configured_shadow_stack = shadow_stack_options or ShadowStackStepOptions()
+    configured_rng_patcher = rng_patcher_options or RngPatcherStepOptions()
 
     steps: list[PipelineStep] = []
     for step_name in normalized_names:
         if step_name == SHADOW_STACK_STEP:
             steps.append(ShadowStackStep(configured_shadow_stack))
+            continue
+        if step_name == RNG_PATCHER_STEP:
+            steps.append(RngPatcherStep(configured_rng_patcher))
             continue
         raise AssertionError(f"unhandled step definition for {step_name!r}")
 
@@ -89,6 +103,9 @@ def _normalize_step_names(step_names: Sequence[str] | None) -> tuple[str, ...]:
 
 
 __all__ = [
+    "RNG_PATCHER_STEP",
+    "RngPatcherStep",
+    "RngPatcherStepOptions",
     "SHADOW_STACK_STEP",
     "ShadowStackStep",
     "ShadowStackStepOptions",

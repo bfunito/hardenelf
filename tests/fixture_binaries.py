@@ -7,7 +7,9 @@ import subprocess
 import unittest
 
 from shstk_injector.inject import inject_entry_trampolines
+from shstk_injector.inject import run_injection_pipeline
 from shstk_injector.return_trampoline import ReturnAddressAction
+from shstk_injector.steps.shadow_stack import ShadowStackStepOptions
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -67,6 +69,38 @@ def patch_fixture(
         crash_message=crash_message,
     )
     return input_path, output_path
+
+
+def run_pipeline_fixture(
+    test_case: unittest.TestCase,
+    name: str,
+    *,
+    steps: tuple[str, ...] | None = None,
+    shadow_size: int = 0x3000,
+    saved_addrs_size: int = 0x2000,
+    return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
+    crash_message: str | bytes | None = None,
+) -> tuple[Path, Path, object]:
+    build_fixtures(test_case)
+    require_injector_dependencies(test_case)
+
+    input_path = BIN_DIR / name
+    output_path = PATCHED_DIR / f"{name}.pipeline"
+    output_path.unlink(missing_ok=True)
+    (output_path.parent / "libsaferand.so").unlink(missing_ok=True)
+
+    result = run_injection_pipeline(
+        input_path,
+        output_path,
+        steps=steps,
+        shadow_stack_options=ShadowStackStepOptions(
+            shadow_size=shadow_size,
+            saved_addrs_size=saved_addrs_size,
+            return_address_action=return_address_action,
+            crash_message=crash_message,
+        ),
+    )
+    return input_path, output_path, result
 
 
 def run_binary(path: Path) -> subprocess.CompletedProcess[str]:

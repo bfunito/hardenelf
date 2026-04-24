@@ -2,10 +2,15 @@
 
 Prototype binary rewriter for injecting security hardening passes into
 non-stripped ELF binaries, including PIE executables. The current implementation
-ships one pipeline step, `shadow-stack`, which expands the target binary with
-`.shadow` and `.saved_addrs` sections and then patches function entry and return
-sites with trampolines that save return addresses and either restore them or
-validate them before returning.
+ships two pipeline steps:
+
+- `shadow-stack`, which expands the target binary with `.shadow` and
+  `.saved_addrs` sections and then patches function entry and return sites with
+  trampolines that save return addresses and either restore them or validate
+  them before returning.
+- `rng-patcher`, which rewrites imported libc RNG symbols to `saferand_*`,
+  adds `libsaferand.so` as a dependency, and emits the shared library next to
+  the patched binary with `$ORIGIN` in `RUNPATH`.
 
 ## Usage
 
@@ -25,6 +30,12 @@ Select a subset of the pipeline explicitly:
 
 ```bash
 shstk-injector --step shadow-stack ./input-binary ./patched-binary
+```
+
+Patch only the unsafe RNG imports:
+
+```bash
+shstk-injector --step rng-patcher ./input-binary ./patched-binary
 ```
 
 The current `shadow-stack` step still accepts its existing options. By default,
