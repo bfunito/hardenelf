@@ -5,6 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from fmtstr_checker.step import (
+    FMTSTR_CHECKER_STEP,
+    FmtStrCheckerStepOptions,
+    FmtStrPatchResult,
+)
 from safe_rng.step import RngPatchResult
 from shstk_injector import __version__
 from shstk_injector.expand import ExpansionResult
@@ -24,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("--crash-message requires --return-address-action compare-crash")
     _validate_shadow_stack_selection(parser, args, selected_steps)
+    _validate_fmtstr_selection(parser, args, selected_steps)
 
     try:
         result = run_injection_pipeline(
@@ -37,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
                 crash_message=args.crash_message,
                 expand_only=args.expand_only,
             ),
+            fmtstr_checker_options=FmtStrCheckerStepOptions(
+                trampoline_size=args.fmtstr_trampoline_size,
+            ),
         )
     except Exception as exc:
         parser.exit(1, f"error: {exc}\n")
@@ -49,8 +58,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="shstk-injector",
         description=(
-            "Inject trampolines that save and protect return addresses in an "
-            "ELF binary."
+            "Run selectable binary hardening passes against an ELF binary."
         ),
     )
     parser.add_argument("input", type=Path, help="input ELF binary")
@@ -76,6 +84,15 @@ def _make_parser() -> argparse.ArgumentParser:
         type=_parse_int,
         default=0x1000,
         help="size of the writable .saved_addrs section; accepts decimal or 0x-prefixed values",
+    )
+    parser.add_argument(
+        "--fmtstr-trampoline-size",
+        type=_parse_int,
+        default=0x4000,
+        help=(
+            "size of the executable .fmtstr_tramp section; accepts decimal or "
+            "0x-prefixed values"
+        ),
     )
     parser.add_argument(
         "--expand-only",
@@ -132,6 +149,20 @@ def _validate_shadow_stack_selection(
         parser.error("shadow-stack options require the shadow-stack pipeline step")
 
 
+def _validate_fmtstr_selection(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    selected_steps: tuple[str, ...],
+) -> None:
+    if FMTSTR_CHECKER_STEP in selected_steps:
+        return
+
+    if args.fmtstr_trampoline_size != 0x4000:
+        parser.error(
+            "--fmtstr-trampoline-size requires the fmtstr-checker pipeline step"
+        )
+
+
 def _print_result(result: PipelineResult) -> None:
     print(f"wrote {result.output_path}")
     if len(result.steps) == 1:
@@ -145,12 +176,28 @@ def _print_result(result: PipelineResult) -> None:
 
 
 def _print_step_result(
-    result: ExpansionResult | EntryInjectionResult | RngPatchResult | object,
+    result: (
+        ExpansionResult
+        | EntryInjectionResult
+        | RngPatchResult
+        | FmtStrPatchResult
+        | object
+    ),
     *,
     indent: str = "",
 ) -> None:
     if isinstance(result, RngPatchResult):
         print(f"{indent}rng imports patched: {len(result.patched_imports)}")
+        if result.library_path is not None:
+            print(f"{indent}library: {result.library_path}")
+        if result.runpath:
+            print(f"{indent}runpath: {':'.join(result.runpath)}")
+        return
+
+    if isinstance(result, FmtStrPatchResult):
+        print(f"{indent}format calls patched: {len(result.patched_calls)}")
+        if result.skipped_calls:
+            print(f"{indent}format calls skipped: {len(result.skipped_calls)}")
         if result.library_path is not None:
             print(f"{indent}library: {result.library_path}")
         if result.runpath:

@@ -88,6 +88,7 @@ def run_pipeline_fixture(
     output_path = PATCHED_DIR / f"{name}.pipeline"
     output_path.unlink(missing_ok=True)
     (output_path.parent / "libsaferand.so").unlink(missing_ok=True)
+    (output_path.parent / "libcheckformat.so").unlink(missing_ok=True)
 
     result = run_injection_pipeline(
         input_path,
@@ -103,9 +104,9 @@ def run_pipeline_fixture(
     return input_path, output_path, result
 
 
-def run_binary(path: Path) -> subprocess.CompletedProcess[str]:
+def run_binary(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(path)],
+        [str(path), *args],
         check=False,
         capture_output=True,
         text=True,

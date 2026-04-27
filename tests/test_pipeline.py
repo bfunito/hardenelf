@@ -3,9 +3,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from fmtstr_checker.step import FmtStrCheckerStep, FmtStrCheckerStepOptions
 from safe_rng.step import RngPatcherStep, RngPatcherStepOptions
 from shstk_injector.pipeline import run_pipeline
 from shstk_injector.steps import (
+    FMTSTR_CHECKER_STEP,
     RNG_PATCHER_STEP,
     SHADOW_STACK_STEP,
     available_step_names,
@@ -84,6 +86,18 @@ class StepRegistryTests(unittest.TestCase):
         self.assertIsInstance(step, RngPatcherStep)
         assert isinstance(step, RngPatcherStep)
         self.assertEqual(step.options.library_name, "custom.so")
+
+    def test_registry_builds_configured_fmtstr_checker_step(self) -> None:
+        step = build_steps(
+            (FMTSTR_CHECKER_STEP,),
+            fmtstr_checker_options=FmtStrCheckerStepOptions(
+                trampoline_size=0x8000,
+            ),
+        )[0]
+
+        self.assertIsInstance(step, FmtStrCheckerStep)
+        assert isinstance(step, FmtStrCheckerStep)
+        self.assertEqual(step.options.trampoline_size, 0x8000)
 
     def test_registry_rejects_duplicate_steps(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be unique"):

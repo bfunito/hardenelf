@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+
+from fmtstr_checker.step import (
+    FMTSTR_CHECKER_STEP,
+    FmtStrCheckerStepOptions,
+    FmtStrPatchResult,
+)
 from safe_rng.step import RNG_PATCHER_STEP, RngPatchResult, RngPatcherStepOptions
 from shstk_injector.pipeline import PipelineResult, run_pipeline
 from shstk_injector.return_trampoline import ReturnAddressAction
@@ -23,6 +29,7 @@ def run_injection_pipeline(
     steps: Sequence[str] | None = None,
     shadow_stack_options: ShadowStackStepOptions | None = None,
     rng_patcher_options: RngPatcherStepOptions | None = None,
+    fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
 ) -> PipelineResult:
     """Run the selected pipeline steps in order."""
 
@@ -30,6 +37,7 @@ def run_injection_pipeline(
         steps,
         shadow_stack_options=shadow_stack_options,
         rng_patcher_options=rng_patcher_options,
+        fmtstr_checker_options=fmtstr_checker_options,
     )
     return run_pipeline(input_path, output_path, steps=configured_steps)
 
@@ -107,8 +115,37 @@ def patch_rng_functions(
     return rng_result
 
 
+def patch_format_strings(
+    input_path: Path | str,
+    output_path: Path | str,
+    *,
+    trampoline_size: int = 0x4000,
+    library_name: str = "libcheckformat.so",
+    source_path: Path | str | None = None,
+) -> FmtStrPatchResult:
+    """Run the format-string checker step through the generic pipeline API."""
+
+    result = run_injection_pipeline(
+        input_path,
+        output_path,
+        steps=(FMTSTR_CHECKER_STEP,),
+        fmtstr_checker_options=FmtStrCheckerStepOptions(
+            trampoline_size=trampoline_size,
+            library_name=library_name,
+            source_path=source_path,
+        ),
+    )
+    fmtstr_result = result.result_for_step(FMTSTR_CHECKER_STEP)
+    if not isinstance(fmtstr_result, FmtStrPatchResult):
+        raise TypeError("fmtstr-checker step returned an unexpected result type")
+    return fmtstr_result
+
+
 __all__ = [
     "EntryInjectionResult",
+    "FMTSTR_CHECKER_STEP",
+    "FmtStrCheckerStepOptions",
+    "FmtStrPatchResult",
     "InjectionResult",
     "PipelineResult",
     "RNG_PATCHER_STEP",
@@ -119,6 +156,7 @@ __all__ = [
     "SkippedFunction",
     "inject_entry_trampolines",
     "inject_trampolines",
+    "patch_format_strings",
     "patch_rng_functions",
     "run_injection_pipeline",
 ]

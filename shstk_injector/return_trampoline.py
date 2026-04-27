@@ -91,6 +91,7 @@ def collect_return_sites(
         for ret_index in ret_indexes
     ]
     _ensure_non_overlapping_return_sites(return_sites)
+    _ensure_return_patches_are_not_branch_targets(instructions, return_sites)
     return return_sites
 
 
@@ -248,3 +249,39 @@ def _ensure_non_overlapping_return_sites(return_sites: list[ReturnSite]) -> None
         if any(ranges_overlap(current_range, seen_range) for seen_range in ranges):
             raise SkipFunction("return patch ranges overlap")
         ranges.append(current_range)
+
+
+def _ensure_return_patches_are_not_branch_targets(
+    instructions: list[Any],
+    return_sites: list[ReturnSite],
+) -> None:
+    patch_ranges = tuple(
+        (
+            return_site.patch_address,
+            return_site.patch_address + return_site.overwritten_size,
+        )
+        for return_site in return_sites
+    )
+
+    for instruction in instructions:
+        target = _direct_branch_target(instruction)
+        if target is None:
+            continue
+        for start, end in patch_ranges:
+            if start < target < end:
+                raise SkipFunction("return patch range has an internal branch target")
+
+
+def _direct_branch_target(instruction: Any) -> int | None:
+    import capstone
+    import capstone.x86_const as x86
+
+    if not instruction.group(capstone.CS_GRP_JUMP):
+        return None
+    if len(instruction.operands) != 1:
+        return None
+
+    operand = instruction.operands[0]
+    if operand.type != x86.X86_OP_IMM:
+        return None
+    return int(operand.imm)

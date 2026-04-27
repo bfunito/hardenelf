@@ -5,6 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from fmtstr_checker.step import (
+    FMTSTR_CHECKER_STEP,
+    FmtStrCheckerStep,
+    FmtStrCheckerStepOptions,
+)
 from safe_rng.step import (
     RNG_PATCHER_STEP,
     RngPatcherStep,
@@ -36,6 +41,10 @@ _STEP_DEFINITIONS = (
         name=RNG_PATCHER_STEP,
         description=RngPatcherStep.description,
     ),
+    StepDefinition(
+        name=FMTSTR_CHECKER_STEP,
+        description=FmtStrCheckerStep.description,
+    ),
 )
 
 
@@ -56,12 +65,14 @@ def build_steps(
     *,
     shadow_stack_options: ShadowStackStepOptions | None = None,
     rng_patcher_options: RngPatcherStepOptions | None = None,
+    fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
 ) -> tuple[PipelineStep, ...]:
     """Instantiate the requested step sequence."""
 
     normalized_names = _normalize_step_names(step_names)
     configured_shadow_stack = shadow_stack_options or ShadowStackStepOptions()
     configured_rng_patcher = rng_patcher_options or RngPatcherStepOptions()
+    configured_fmtstr_checker = fmtstr_checker_options or FmtStrCheckerStepOptions()
 
     steps: list[PipelineStep] = []
     for step_name in normalized_names:
@@ -70,6 +81,9 @@ def build_steps(
             continue
         if step_name == RNG_PATCHER_STEP:
             steps.append(RngPatcherStep(configured_rng_patcher))
+            continue
+        if step_name == FMTSTR_CHECKER_STEP:
+            steps.append(FmtStrCheckerStep(configured_fmtstr_checker))
             continue
         raise AssertionError(f"unhandled step definition for {step_name!r}")
 
@@ -103,6 +117,9 @@ def _normalize_step_names(step_names: Sequence[str] | None) -> tuple[str, ...]:
 
 
 __all__ = [
+    "FMTSTR_CHECKER_STEP",
+    "FmtStrCheckerStep",
+    "FmtStrCheckerStepOptions",
     "RNG_PATCHER_STEP",
     "RngPatcherStep",
     "RngPatcherStepOptions",
