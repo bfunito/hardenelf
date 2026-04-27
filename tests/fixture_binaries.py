@@ -6,8 +6,8 @@ import shutil
 import subprocess
 import unittest
 
+from binary_hardening.api import run_hardening_pipeline
 from shstk_injector.inject import inject_entry_trampolines
-from shstk_injector.inject import run_injection_pipeline
 from shstk_injector.return_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import ShadowStackStepOptions
 
@@ -90,7 +90,7 @@ def run_pipeline_fixture(
     (output_path.parent / "libsaferand.so").unlink(missing_ok=True)
     (output_path.parent / "libcheckformat.so").unlink(missing_ok=True)
 
-    result = run_injection_pipeline(
+    result = run_hardening_pipeline(
         input_path,
         output_path,
         steps=steps,

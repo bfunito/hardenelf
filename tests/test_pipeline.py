@@ -3,16 +3,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from fmtstr_checker.step import FmtStrCheckerStep, FmtStrCheckerStepOptions
-from safe_rng.step import RngPatcherStep, RngPatcherStepOptions
-from shstk_injector.pipeline import run_pipeline
-from shstk_injector.steps import (
+from binary_hardening.pipeline import run_pipeline
+from binary_hardening.registry import (
     FMTSTR_CHECKER_STEP,
     RNG_PATCHER_STEP,
     SHADOW_STACK_STEP,
     available_step_names,
     build_steps,
 )
+from fmtstr_checker.step import FmtStrCheckerStep, FmtStrCheckerStepOptions
+from safe_rng.step import RngPatcherStep, RngPatcherStepOptions
+from shstk_injector.steps import available_step_names as legacy_step_names
 from shstk_injector.steps.shadow_stack import ShadowStackStep, ShadowStackStepOptions
 
 
@@ -66,6 +67,27 @@ class StepRegistryTests(unittest.TestCase):
         steps = build_steps()
 
         self.assertEqual(tuple(step.name for step in steps), available_step_names())
+
+    def test_registry_preserves_user_defined_step_order(self) -> None:
+        steps = build_steps(
+            (
+                FMTSTR_CHECKER_STEP,
+                RNG_PATCHER_STEP,
+                SHADOW_STACK_STEP,
+            )
+        )
+
+        self.assertEqual(
+            tuple(step.name for step in steps),
+            (
+                FMTSTR_CHECKER_STEP,
+                RNG_PATCHER_STEP,
+                SHADOW_STACK_STEP,
+            ),
+        )
+
+    def test_legacy_step_registry_delegates_to_central_registry(self) -> None:
+        self.assertEqual(legacy_step_names(), available_step_names())
 
     def test_registry_builds_configured_shadow_stack_step(self) -> None:
         step = build_steps(

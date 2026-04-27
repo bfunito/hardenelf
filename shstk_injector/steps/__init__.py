@@ -1,9 +1,8 @@
-"""Pipeline step registry."""
+"""Backward-compatible access to registered pipeline steps."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from fmtstr_checker.step import (
     FMTSTR_CHECKER_STEP,
@@ -15,7 +14,6 @@ from safe_rng.step import (
     RngPatcherStep,
     RngPatcherStepOptions,
 )
-from shstk_injector.pipeline import PipelineStep
 
 from .shadow_stack import (
     SHADOW_STACK_STEP,
@@ -24,102 +22,48 @@ from .shadow_stack import (
 )
 
 
-@dataclass(frozen=True)
-class StepDefinition:
-    """Static metadata for one pipeline step."""
+def available_steps() -> tuple[object, ...]:
+    """Return registered steps from the central registry."""
 
-    name: str
-    description: str
+    from binary_hardening.registry import available_steps as _available_steps
 
-
-_STEP_DEFINITIONS = (
-    StepDefinition(
-        name=SHADOW_STACK_STEP,
-        description=ShadowStackStep.description,
-    ),
-    StepDefinition(
-        name=RNG_PATCHER_STEP,
-        description=RngPatcherStep.description,
-    ),
-    StepDefinition(
-        name=FMTSTR_CHECKER_STEP,
-        description=FmtStrCheckerStep.description,
-    ),
-)
-
-
-def available_steps() -> tuple[StepDefinition, ...]:
-    """Return the implemented steps in pipeline order."""
-
-    return _STEP_DEFINITIONS
+    return _available_steps()
 
 
 def available_step_names() -> tuple[str, ...]:
-    """Return the implemented step names in pipeline order."""
+    """Return registered step names from the central registry."""
 
-    return tuple(step.name for step in _STEP_DEFINITIONS)
+    from binary_hardening.registry import (
+        available_step_names as _available_step_names,
+    )
+
+    return _available_step_names()
 
 
 def build_steps(
     step_names: Sequence[str] | None = None,
-    *,
-    shadow_stack_options: ShadowStackStepOptions | None = None,
-    rng_patcher_options: RngPatcherStepOptions | None = None,
-    fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
-) -> tuple[PipelineStep, ...]:
-    """Instantiate the requested step sequence."""
+    **kwargs: object,
+) -> tuple[object, ...]:
+    """Instantiate steps through the central registry."""
 
-    normalized_names = _normalize_step_names(step_names)
-    configured_shadow_stack = shadow_stack_options or ShadowStackStepOptions()
-    configured_rng_patcher = rng_patcher_options or RngPatcherStepOptions()
-    configured_fmtstr_checker = fmtstr_checker_options or FmtStrCheckerStepOptions()
+    from binary_hardening.registry import build_steps as _build_steps
 
-    steps: list[PipelineStep] = []
-    for step_name in normalized_names:
-        if step_name == SHADOW_STACK_STEP:
-            steps.append(ShadowStackStep(configured_shadow_stack))
-            continue
-        if step_name == RNG_PATCHER_STEP:
-            steps.append(RngPatcherStep(configured_rng_patcher))
-            continue
-        if step_name == FMTSTR_CHECKER_STEP:
-            steps.append(FmtStrCheckerStep(configured_fmtstr_checker))
-            continue
-        raise AssertionError(f"unhandled step definition for {step_name!r}")
-
-    return tuple(steps)
+    return _build_steps(step_names, **kwargs)
 
 
-def _normalize_step_names(step_names: Sequence[str] | None) -> tuple[str, ...]:
-    if step_names is None:
-        return available_step_names()
+def __getattr__(name: str) -> object:
+    if name in {"PipelineOptions", "StepDefinition"}:
+        from binary_hardening import registry
 
-    normalized = tuple(step_names)
-    duplicates = tuple(
-        step_name
-        for index, step_name in enumerate(normalized)
-        if step_name in normalized[:index]
-    )
-    if duplicates:
-        repeated = ", ".join(sorted(set(duplicates)))
-        raise ValueError(f"pipeline steps must be unique: {repeated}")
-
-    supported = set(available_step_names())
-    unknown = tuple(step_name for step_name in normalized if step_name not in supported)
-    if unknown:
-        supported_list = ", ".join(available_step_names())
-        unknown_list = ", ".join(unknown)
-        raise ValueError(
-            f"unknown pipeline step(s): {unknown_list}; supported steps: {supported_list}"
-        )
-
-    return normalized
+        return getattr(registry, name)
+    raise AttributeError(name)
 
 
 __all__ = [
     "FMTSTR_CHECKER_STEP",
     "FmtStrCheckerStep",
     "FmtStrCheckerStepOptions",
+    "PipelineOptions",
     "RNG_PATCHER_STEP",
     "RngPatcherStep",
     "RngPatcherStepOptions",

@@ -1,1 +1,1 @@
-"""Tests for the SHSTK injector prototype."""
+"""Tests for the hardenelf prototype."""

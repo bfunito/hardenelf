@@ -1,4 +1,4 @@
-"""ELF expansion primitives for the SHSTK injector prototype."""
+"""ELF expansion primitives for shadow-stack injection."""
 
 from __future__ import annotations
 

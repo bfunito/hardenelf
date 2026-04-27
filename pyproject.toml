@@ -1,7 +1,7 @@
 [project]
-name = "shstk-injector"
+name = "hardenelf"
 version = "0.1.0"
-description = "Prototype binary rewriter for injecting a software shadow stack into ELF binaries."
+description = "Prototype binary rewriter for injecting selectable hardening passes into ELF binaries."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -11,10 +11,10 @@ dependencies = [
 ]
 
 [project.scripts]
-shstk-injector = "shstk_injector.cli:main"
+hardenelf = "binary_hardening.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["shstk_injector*", "safe_rng*", "fmtstr_checker*"]
+include = ["binary_hardening*", "shstk_injector*", "safe_rng*", "fmtstr_checker*"]
 
 [tool.setuptools.package-data]
 safe_rng = ["native/*.c"]

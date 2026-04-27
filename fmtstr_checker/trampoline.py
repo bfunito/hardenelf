@@ -5,8 +5,8 @@ from __future__ import annotations
 import struct
 from typing import Any
 
+from binary_hardening.x86 import SkipFunction, assemble, make_jump
 from fmtstr_checker.analysis import FormatCall
-from shstk_injector.x86 import SkipFunction, assemble, make_jump
 
 
 _LOAD_R11_RIP_MEM_SIZE = 7

@@ -1,4 +1,4 @@
-# SHSTK Injector
+# Binary Hardening Pipeline
 
 Prototype binary rewriter for injecting security hardening passes into
 non-stripped ELF binaries, including PIE executables. The current implementation
@@ -26,25 +26,40 @@ python -m pip install -e .
 Rewrite an ELF binary with all implemented pipeline steps:
 
 ```bash
-shstk-injector ./input-binary ./patched-binary
+hardenelf ./input-binary ./patched-binary
 ```
 
-Select a subset of the pipeline explicitly:
+Select a subset of the pipeline explicitly. Repeating `--step` preserves the
+order you provide:
 
 ```bash
-shstk-injector --step shadow-stack ./input-binary ./patched-binary
+hardenelf --step shadow-stack ./input-binary ./patched-binary
+hardenelf \
+  --step fmtstr-checker \
+  --step rng-patcher \
+  ./input-binary \
+  ./patched-binary
 ```
+
+The pipeline itself is centralized in `binary_hardening`. Individual features
+live in their own step packages:
+
+- `shstk_injector.steps.shadow_stack`
+- `safe_rng.step`
+- `fmtstr_checker.step`
+
+Existing `shstk_injector.*` pipeline imports are kept as compatibility wrappers.
 
 Patch only the unsafe RNG imports:
 
 ```bash
-shstk-injector --step rng-patcher ./input-binary ./patched-binary
+hardenelf --step rng-patcher ./input-binary ./patched-binary
 ```
 
 Patch only printf-like calls:
 
 ```bash
-shstk-injector --step fmtstr-checker ./input-binary ./patched-binary
+hardenelf --step fmtstr-checker ./input-binary ./patched-binary
 ```
 
 The format-string checker currently protects direct x86-64 PLT calls where the
@@ -57,13 +72,13 @@ return trampolines restore the saved return address. To compare the saved and
 live return addresses and crash on mismatch instead:
 
 ```bash
-shstk-injector --return-address-action compare-crash ./input-binary ./patched-binary
+hardenelf --return-address-action compare-crash ./input-binary ./patched-binary
 ```
 
 Compare-and-crash mode can print a custom message to stderr before trapping:
 
 ```bash
-shstk-injector \
+hardenelf \
   --return-address-action compare-crash \
   --crash-message "shadow stack mismatch" \
   ./input-binary ./patched-binary
@@ -72,13 +87,13 @@ shstk-injector \
 Only expand the binary with the sections required by the `shadow-stack` step:
 
 ```bash
-shstk-injector --expand-only ./input-binary ./expanded-binary
+hardenelf --expand-only ./input-binary ./expanded-binary
 ```
 
 Optional section sizes accept decimal or `0x`-prefixed values:
 
 ```bash
-shstk-injector --shadow-size 0x2000 --saved-addrs-size 0x2000 ./input ./output
+hardenelf --shadow-size 0x2000 --saved-addrs-size 0x2000 ./input ./output
 ```
 
 Run the tests:

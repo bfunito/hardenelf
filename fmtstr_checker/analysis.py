@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 import lief
 
-from shstk_injector.x86 import function_code_limit
+from binary_hardening.x86 import function_code_limit
 
 
 ARG_REGISTERS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")

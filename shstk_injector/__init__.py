@@ -1,4 +1,4 @@
-"""Prototype binary rewriter for the thesis SHSTK injector."""
+"""Shadow-stack feature package and compatibility namespace."""
 
 __all__ = ["__version__"]
 

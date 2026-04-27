@@ -23,7 +23,7 @@ from fmtstr_checker.trampoline import (
     build_format_trampoline,
     make_call,
 )
-from shstk_injector.x86 import (
+from binary_hardening.x86 import (
     SkipFunction,
     ensure_x86_64,
     make_assembler,
