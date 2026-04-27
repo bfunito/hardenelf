@@ -10,6 +10,11 @@ from fmtstr_checker.step import (
     FmtStrCheckerStep,
     FmtStrCheckerStepOptions,
 )
+from initialize_frames.step import (
+    INITIALIZE_FRAMES_STEP,
+    InitializeFramesStep,
+    InitializeFramesStepOptions,
+)
 from safe_rng.step import (
     RNG_PATCHER_STEP,
     RngPatcherStep,
@@ -29,6 +34,9 @@ class PipelineOptions:
     """Configuration for all registered pipeline steps."""
 
     shadow_stack: ShadowStackStepOptions = field(default_factory=ShadowStackStepOptions)
+    initialize_frames: InitializeFramesStepOptions = field(
+        default_factory=InitializeFramesStepOptions
+    )
     rng_patcher: RngPatcherStepOptions = field(default_factory=RngPatcherStepOptions)
     fmtstr_checker: FmtStrCheckerStepOptions = field(
         default_factory=FmtStrCheckerStepOptions
@@ -45,6 +53,11 @@ class StepDefinition:
 
 
 _STEP_DEFINITIONS = (
+    StepDefinition(
+        name=INITIALIZE_FRAMES_STEP,
+        description=InitializeFramesStep.description,
+        build=lambda options: InitializeFramesStep(options.initialize_frames),
+    ),
     StepDefinition(
         name=SHADOW_STACK_STEP,
         description=ShadowStackStep.description,
@@ -81,6 +94,7 @@ def build_steps(
     *,
     options: PipelineOptions | None = None,
     shadow_stack_options: ShadowStackStepOptions | None = None,
+    initialize_frames_options: InitializeFramesStepOptions | None = None,
     rng_patcher_options: RngPatcherStepOptions | None = None,
     fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
 ) -> tuple[PipelineStep, ...]:
@@ -90,6 +104,7 @@ def build_steps(
     configured_options = _merge_options(
         options,
         shadow_stack_options=shadow_stack_options,
+        initialize_frames_options=initialize_frames_options,
         rng_patcher_options=rng_patcher_options,
         fmtstr_checker_options=fmtstr_checker_options,
     )
@@ -103,12 +118,14 @@ def _merge_options(
     options: PipelineOptions | None,
     *,
     shadow_stack_options: ShadowStackStepOptions | None,
+    initialize_frames_options: InitializeFramesStepOptions | None,
     rng_patcher_options: RngPatcherStepOptions | None,
     fmtstr_checker_options: FmtStrCheckerStepOptions | None,
 ) -> PipelineOptions:
     base = options or PipelineOptions()
     return PipelineOptions(
         shadow_stack=shadow_stack_options or base.shadow_stack,
+        initialize_frames=initialize_frames_options or base.initialize_frames,
         rng_patcher=rng_patcher_options or base.rng_patcher,
         fmtstr_checker=fmtstr_checker_options or base.fmtstr_checker,
     )
@@ -144,6 +161,9 @@ __all__ = [
     "FMTSTR_CHECKER_STEP",
     "FmtStrCheckerStep",
     "FmtStrCheckerStepOptions",
+    "INITIALIZE_FRAMES_STEP",
+    "InitializeFramesStep",
+    "InitializeFramesStepOptions",
     "PipelineOptions",
     "RNG_PATCHER_STEP",
     "RngPatcherStep",

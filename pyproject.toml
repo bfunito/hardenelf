@@ -14,7 +14,13 @@ dependencies = [
 hardenelf = "binary_hardening.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["binary_hardening*", "shstk_injector*", "safe_rng*", "fmtstr_checker*"]
+include = [
+    "binary_hardening*",
+    "shstk_injector*",
+    "safe_rng*",
+    "fmtstr_checker*",
+    "initialize_frames*",
+]
 
 [tool.setuptools.package-data]
 safe_rng = ["native/*.c"]

@@ -10,6 +10,11 @@ from fmtstr_checker.step import (
     FmtStrCheckerStepOptions,
     FmtStrPatchResult,
 )
+from initialize_frames.step import (
+    INITIALIZE_FRAMES_STEP,
+    FrameInitializationResult,
+    InitializeFramesStepOptions,
+)
 from safe_rng.step import RngPatchResult
 from shstk_injector import __version__
 from shstk_injector.expand import ExpansionResult
@@ -38,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("--crash-message requires --return-address-action compare-crash")
     _validate_shadow_stack_selection(parser, args, selected_steps)
+    _validate_initialize_frames_selection(parser, args, selected_steps)
     _validate_fmtstr_selection(parser, args, selected_steps)
 
     try:
@@ -55,6 +61,9 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 fmtstr_checker=FmtStrCheckerStepOptions(
                     trampoline_size=args.fmtstr_trampoline_size,
+                ),
+                initialize_frames=InitializeFramesStepOptions(
+                    trampoline_size=args.init_frame_trampoline_size,
                 ),
             ),
         )
@@ -106,6 +115,15 @@ def _make_parser() -> argparse.ArgumentParser:
         default=0x4000,
         help=(
             "size of the executable .fmtstr_tramp section; accepts decimal or "
+            "0x-prefixed values"
+        ),
+    )
+    parser.add_argument(
+        "--init-frame-trampoline-size",
+        type=_parse_int,
+        default=0x4000,
+        help=(
+            "size of the executable .init_frames section; accepts decimal or "
             "0x-prefixed values"
         ),
     )
@@ -178,6 +196,20 @@ def _validate_fmtstr_selection(
         )
 
 
+def _validate_initialize_frames_selection(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    selected_steps: tuple[str, ...],
+) -> None:
+    if INITIALIZE_FRAMES_STEP in selected_steps:
+        return
+
+    if args.init_frame_trampoline_size != 0x4000:
+        parser.error(
+            "--init-frame-trampoline-size requires the initialize-frames pipeline step"
+        )
+
+
 def _print_result(result: PipelineResult) -> None:
     print(f"wrote {result.output_path}")
     if len(result.steps) == 1:
@@ -196,6 +228,7 @@ def _print_step_result(
         | EntryInjectionResult
         | RngPatchResult
         | FmtStrPatchResult
+        | FrameInitializationResult
         | object
     ),
     *,
@@ -217,6 +250,18 @@ def _print_step_result(
             print(f"{indent}library: {result.library_path}")
         if result.runpath:
             print(f"{indent}runpath: {':'.join(result.runpath)}")
+        return
+
+    if isinstance(result, FrameInitializationResult):
+        print(f"{indent}initialized stack frames: {len(result.initialized_frames)}")
+        if result.skipped:
+            print(f"{indent}stack frames skipped: {len(result.skipped)}")
+        if result.section_address is not None:
+            print(
+                f"{indent}{result.section_name}: "
+                f"va=0x{result.section_address:x} "
+                f"size=0x{result.section_size:x}"
+            )
         return
 
     if not isinstance(result, (ExpansionResult, EntryInjectionResult)):

@@ -10,6 +10,11 @@ from fmtstr_checker.step import (
     FmtStrCheckerStepOptions,
     FmtStrPatchResult,
 )
+from initialize_frames.step import (
+    INITIALIZE_FRAMES_STEP,
+    FrameInitializationResult,
+    InitializeFramesStepOptions,
+)
 from safe_rng.step import RNG_PATCHER_STEP, RngPatchResult, RngPatcherStepOptions
 from shstk_injector.return_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import (
@@ -31,6 +36,7 @@ def run_hardening_pipeline(
     steps: Sequence[str] | None = None,
     options: PipelineOptions | None = None,
     shadow_stack_options: ShadowStackStepOptions | None = None,
+    initialize_frames_options: InitializeFramesStepOptions | None = None,
     rng_patcher_options: RngPatcherStepOptions | None = None,
     fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
 ) -> PipelineResult:
@@ -40,6 +46,7 @@ def run_hardening_pipeline(
         steps,
         options=options,
         shadow_stack_options=shadow_stack_options,
+        initialize_frames_options=initialize_frames_options,
         rng_patcher_options=rng_patcher_options,
         fmtstr_checker_options=fmtstr_checker_options,
     )
@@ -53,6 +60,7 @@ def run_injection_pipeline(
     steps: Sequence[str] | None = None,
     options: PipelineOptions | None = None,
     shadow_stack_options: ShadowStackStepOptions | None = None,
+    initialize_frames_options: InitializeFramesStepOptions | None = None,
     rng_patcher_options: RngPatcherStepOptions | None = None,
     fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
 ) -> PipelineResult:
@@ -64,6 +72,7 @@ def run_injection_pipeline(
         steps=steps,
         options=options,
         shadow_stack_options=shadow_stack_options,
+        initialize_frames_options=initialize_frames_options,
         rng_patcher_options=rng_patcher_options,
         fmtstr_checker_options=fmtstr_checker_options,
     )
@@ -142,6 +151,28 @@ def patch_rng_functions(
     return rng_result
 
 
+def initialize_stack_frames(
+    input_path: Path | str,
+    output_path: Path | str,
+    *,
+    trampoline_size: int = 0x4000,
+) -> FrameInitializationResult:
+    """Run only the stack-frame initialization step."""
+
+    result = run_hardening_pipeline(
+        input_path,
+        output_path,
+        steps=(INITIALIZE_FRAMES_STEP,),
+        initialize_frames_options=InitializeFramesStepOptions(
+            trampoline_size=trampoline_size,
+        ),
+    )
+    frame_result = result.result_for_step(INITIALIZE_FRAMES_STEP)
+    if not isinstance(frame_result, FrameInitializationResult):
+        raise TypeError("initialize-frames step returned an unexpected result type")
+    return frame_result
+
+
 def patch_format_strings(
     input_path: Path | str,
     output_path: Path | str,
@@ -171,8 +202,11 @@ def patch_format_strings(
 __all__ = [
     "EntryInjectionResult",
     "FMTSTR_CHECKER_STEP",
+    "INITIALIZE_FRAMES_STEP",
+    "FrameInitializationResult",
     "FmtStrCheckerStepOptions",
     "FmtStrPatchResult",
+    "InitializeFramesStepOptions",
     "InjectionResult",
     "PipelineOptions",
     "PipelineResult",
@@ -182,6 +216,7 @@ __all__ = [
     "SHADOW_STACK_STEP",
     "ShadowStackStepOptions",
     "SkippedFunction",
+    "initialize_stack_frames",
     "inject_entry_trampolines",
     "inject_trampolines",
     "patch_format_strings",

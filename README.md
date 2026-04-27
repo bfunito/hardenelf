@@ -2,8 +2,10 @@
 
 Prototype binary rewriter for injecting security hardening passes into
 non-stripped ELF binaries, including PIE executables. The current implementation
-ships three pipeline steps:
+ships four pipeline steps:
 
+- `initialize-frames`, which patches conventional frame-pointer functions so
+  their allocated stack frame is zeroed immediately after setup.
 - `shadow-stack`, which expands the target binary with `.shadow` and
   `.saved_addrs` sections and then patches function entry and return sites with
   trampolines that save return addresses and either restore them or validate
@@ -45,6 +47,7 @@ The pipeline itself is centralized in `binary_hardening`. Individual features
 live in their own step packages:
 
 - `shstk_injector.steps.shadow_stack`
+- `initialize_frames.step`
 - `safe_rng.step`
 - `fmtstr_checker.step`
 
@@ -55,6 +58,16 @@ Patch only the unsafe RNG imports:
 ```bash
 hardenelf --step rng-patcher ./input-binary ./patched-binary
 ```
+
+Patch only stack-frame initialization:
+
+```bash
+hardenelf --step initialize-frames ./input-binary ./patched-binary
+```
+
+The frame initializer currently targets x86-64 functions with the canonical
+`push rbp; mov rbp, rsp; sub rsp, imm` prologue emitted by unoptimized builds.
+Functions without an allocated frame are reported as skipped.
 
 Patch only printf-like calls:
 

@@ -6,12 +6,14 @@ import unittest
 from binary_hardening.pipeline import run_pipeline
 from binary_hardening.registry import (
     FMTSTR_CHECKER_STEP,
+    INITIALIZE_FRAMES_STEP,
     RNG_PATCHER_STEP,
     SHADOW_STACK_STEP,
     available_step_names,
     build_steps,
 )
 from fmtstr_checker.step import FmtStrCheckerStep, FmtStrCheckerStepOptions
+from initialize_frames.step import InitializeFramesStep, InitializeFramesStepOptions
 from safe_rng.step import RngPatcherStep, RngPatcherStepOptions
 from shstk_injector.steps import available_step_names as legacy_step_names
 from shstk_injector.steps.shadow_stack import ShadowStackStep, ShadowStackStepOptions
@@ -73,6 +75,7 @@ class StepRegistryTests(unittest.TestCase):
             (
                 FMTSTR_CHECKER_STEP,
                 RNG_PATCHER_STEP,
+                INITIALIZE_FRAMES_STEP,
                 SHADOW_STACK_STEP,
             )
         )
@@ -82,6 +85,7 @@ class StepRegistryTests(unittest.TestCase):
             (
                 FMTSTR_CHECKER_STEP,
                 RNG_PATCHER_STEP,
+                INITIALIZE_FRAMES_STEP,
                 SHADOW_STACK_STEP,
             ),
         )
@@ -108,6 +112,18 @@ class StepRegistryTests(unittest.TestCase):
         self.assertIsInstance(step, RngPatcherStep)
         assert isinstance(step, RngPatcherStep)
         self.assertEqual(step.options.library_name, "custom.so")
+
+    def test_registry_builds_configured_initialize_frames_step(self) -> None:
+        step = build_steps(
+            (INITIALIZE_FRAMES_STEP,),
+            initialize_frames_options=InitializeFramesStepOptions(
+                trampoline_size=0x8000,
+            ),
+        )[0]
+
+        self.assertIsInstance(step, InitializeFramesStep)
+        assert isinstance(step, InitializeFramesStep)
+        self.assertEqual(step.options.trampoline_size, 0x8000)
 
     def test_registry_builds_configured_fmtstr_checker_step(self) -> None:
         step = build_steps(

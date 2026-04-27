@@ -9,6 +9,11 @@ from fmtstr_checker.step import (
     FmtStrCheckerStep,
     FmtStrCheckerStepOptions,
 )
+from initialize_frames.step import (
+    INITIALIZE_FRAMES_STEP,
+    InitializeFramesStep,
+    InitializeFramesStepOptions,
+)
 from safe_rng.step import (
     RNG_PATCHER_STEP,
     RngPatcherStep,
@@ -63,6 +68,9 @@ __all__ = [
     "FMTSTR_CHECKER_STEP",
     "FmtStrCheckerStep",
     "FmtStrCheckerStepOptions",
+    "INITIALIZE_FRAMES_STEP",
+    "InitializeFramesStep",
+    "InitializeFramesStepOptions",
     "PipelineOptions",
     "RNG_PATCHER_STEP",
     "RngPatcherStep",
