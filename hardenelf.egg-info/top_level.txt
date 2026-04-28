@@ -1,0 +1,5 @@
+binary_hardening
+fmtstr_checker
+initialize_frames
+safe_rng
+shstk_injector

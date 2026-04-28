@@ -1,3 +1,13 @@
+Metadata-Version: 2.4
+Name: hardenelf
+Version: 0.1.0
+Summary: Prototype binary rewriter for injecting selectable hardening passes into ELF binaries.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: capstone>=5
+Requires-Dist: keystone-engine>=0.9.2
+Requires-Dist: lief>=0.17
+
 # Binary Hardening Pipeline
 
 Prototype binary rewriter for injecting security hardening passes into

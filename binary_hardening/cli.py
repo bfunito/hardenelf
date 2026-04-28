@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from fmtstr_checker.step import (
@@ -16,12 +17,11 @@ from initialize_frames.step import (
     InitializeFramesStepOptions,
 )
 from safe_rng.step import RngPatchResult
-from shstk_injector import __version__
 from shstk_injector.expand import ExpansionResult
 from shstk_injector.return_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import (
     SHADOW_STACK_STEP,
-    EntryInjectionResult,
+    InjectionResult,
     ShadowStackStepOptions,
 )
 
@@ -130,7 +130,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--expand-only",
         action="store_true",
-        help="only add .shadow and .saved_addrs without writing entry trampolines",
+        help="only add .shadow and .saved_addrs without writing trampolines",
     )
     parser.add_argument(
         "--return-address-action",
@@ -148,9 +148,16 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {__version__}",
+        version=f"%(prog)s {_package_version()}",
     )
     return parser
+
+
+def _package_version() -> str:
+    try:
+        return version("hardenelf")
+    except PackageNotFoundError:
+        return "0.1.0"
 
 
 def _parse_int(value: str) -> int:
@@ -225,7 +232,7 @@ def _print_result(result: PipelineResult) -> None:
 def _print_step_result(
     result: (
         ExpansionResult
-        | EntryInjectionResult
+        | InjectionResult
         | RngPatchResult
         | FmtStrPatchResult
         | FrameInitializationResult
@@ -264,7 +271,7 @@ def _print_step_result(
             )
         return
 
-    if not isinstance(result, (ExpansionResult, EntryInjectionResult)):
+    if not isinstance(result, (ExpansionResult, InjectionResult)):
         print(f"{indent}completed")
         return
 
@@ -277,7 +284,7 @@ def _print_step_result(
             f"size=0x{section.size:x} "
             f"flags={flags}"
         )
-    if isinstance(result, EntryInjectionResult):
+    if isinstance(result, InjectionResult):
         print(f"{indent}pie: {'yes' if result.is_pie else 'no'}")
         print(f"{indent}entry trampolines: {len(result.trampolines)}")
         print(f"{indent}return trampolines: {len(result.return_trampolines)}")

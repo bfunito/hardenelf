@@ -29,7 +29,7 @@ from shstk_injector.return_trampoline import (
     build_return_trampoline,
     collect_return_sites,
 )
-from shstk_injector.x86 import (
+from binary_hardening.x86 import (
     NEAR_JUMP_SIZE,
     SkipFunction,
     ensure_x86_64,
@@ -67,9 +67,6 @@ class InjectionResult:
     skipped: tuple[SkippedFunction, ...]
     return_trampolines: tuple[ReturnTrampoline, ...] = ()
     is_pie: bool = False
-
-
-EntryInjectionResult = InjectionResult
 
 
 @dataclass(frozen=True)
@@ -392,7 +389,6 @@ def _patch_returns(
 
 
 __all__ = [
-    "EntryInjectionResult",
     "InjectionResult",
     "SHADOW_STACK_STEP",
     "ShadowStackStep",

@@ -8,10 +8,9 @@ import unittest
 
 import lief
 
+from binary_hardening.api import patch_rng_functions
 from safe_rng.saferand import build_saferand_library
-from safe_rng.step import RngPatchResult
-from shstk_injector.inject import patch_rng_functions
-from shstk_injector.steps import RNG_PATCHER_STEP
+from safe_rng.step import RNG_PATCHER_STEP, RngPatchResult
 from tests.fixture_binaries import (
     BIN_DIR,
     build_fixtures,

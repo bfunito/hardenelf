@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from shstk_injector.x86 import SkipFunction, assemble
+from binary_hardening.x86 import SkipFunction, assemble
 
 
 _RIP_OPERAND_RE = re.compile(r"\brip(?:\s*([+-])\s*(0x[0-9a-fA-F]+|\d+))?")

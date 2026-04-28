@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shstk_injector.relocation import relocate_instruction
-
+from binary_hardening.relocation import relocate_instruction
 from binary_hardening.x86 import assemble, make_jump
 from initialize_frames.analysis import FrameInitializationSite
 

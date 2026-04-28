@@ -6,8 +6,7 @@ import shutil
 import subprocess
 import unittest
 
-from binary_hardening.api import run_hardening_pipeline
-from shstk_injector.inject import inject_entry_trampolines
+from binary_hardening.api import inject_trampolines, run_hardening_pipeline
 from shstk_injector.return_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import ShadowStackStepOptions
 
@@ -60,7 +59,7 @@ def patch_fixture(
     output_path = PATCHED_DIR / f"{name}.patched"
     output_path.unlink(missing_ok=True)
 
-    inject_entry_trampolines(
+    inject_trampolines(
         input_path,
         output_path,
         shadow_size=shadow_size,

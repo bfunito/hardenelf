@@ -15,7 +15,6 @@ from binary_hardening.registry import (
 from fmtstr_checker.step import FmtStrCheckerStep, FmtStrCheckerStepOptions
 from initialize_frames.step import InitializeFramesStep, InitializeFramesStepOptions
 from safe_rng.step import RngPatcherStep, RngPatcherStepOptions
-from shstk_injector.steps import available_step_names as legacy_step_names
 from shstk_injector.steps.shadow_stack import ShadowStackStep, ShadowStackStepOptions
 
 
@@ -89,9 +88,6 @@ class StepRegistryTests(unittest.TestCase):
                 SHADOW_STACK_STEP,
             ),
         )
-
-    def test_legacy_step_registry_delegates_to_central_registry(self) -> None:
-        self.assertEqual(legacy_step_names(), available_step_names())
 
     def test_registry_builds_configured_shadow_stack_step(self) -> None:
         step = build_steps(

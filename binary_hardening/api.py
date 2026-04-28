@@ -19,7 +19,6 @@ from safe_rng.step import RNG_PATCHER_STEP, RngPatchResult, RngPatcherStepOption
 from shstk_injector.return_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import (
     SHADOW_STACK_STEP,
-    EntryInjectionResult,
     InjectionResult,
     ShadowStackStepOptions,
     SkippedFunction,
@@ -53,31 +52,6 @@ def run_hardening_pipeline(
     return run_pipeline(input_path, output_path, steps=configured_steps)
 
 
-def run_injection_pipeline(
-    input_path: Path | str,
-    output_path: Path | str,
-    *,
-    steps: Sequence[str] | None = None,
-    options: PipelineOptions | None = None,
-    shadow_stack_options: ShadowStackStepOptions | None = None,
-    initialize_frames_options: InitializeFramesStepOptions | None = None,
-    rng_patcher_options: RngPatcherStepOptions | None = None,
-    fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
-) -> PipelineResult:
-    """Backward-compatible alias for ``run_hardening_pipeline``."""
-
-    return run_hardening_pipeline(
-        input_path,
-        output_path,
-        steps=steps,
-        options=options,
-        shadow_stack_options=shadow_stack_options,
-        initialize_frames_options=initialize_frames_options,
-        rng_patcher_options=rng_patcher_options,
-        fmtstr_checker_options=fmtstr_checker_options,
-    )
-
-
 def inject_trampolines(
     input_path: Path | str,
     output_path: Path | str,
@@ -104,27 +78,6 @@ def inject_trampolines(
     if not isinstance(shadow_stack_result, InjectionResult):
         raise TypeError("shadow-stack step returned an unexpected result type")
     return shadow_stack_result
-
-
-def inject_entry_trampolines(
-    input_path: Path | str,
-    output_path: Path | str,
-    *,
-    shadow_size: int = 0x1000,
-    saved_addrs_size: int = 0x1000,
-    return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
-    crash_message: str | bytes | None = None,
-) -> InjectionResult:
-    """Backward-compatible name for the full shadow-stack injector."""
-
-    return inject_trampolines(
-        input_path,
-        output_path,
-        shadow_size=shadow_size,
-        saved_addrs_size=saved_addrs_size,
-        return_address_action=return_address_action,
-        crash_message=crash_message,
-    )
 
 
 def patch_rng_functions(
@@ -200,7 +153,6 @@ def patch_format_strings(
 
 
 __all__ = [
-    "EntryInjectionResult",
     "FMTSTR_CHECKER_STEP",
     "INITIALIZE_FRAMES_STEP",
     "FrameInitializationResult",
@@ -217,10 +169,8 @@ __all__ = [
     "ShadowStackStepOptions",
     "SkippedFunction",
     "initialize_stack_frames",
-    "inject_entry_trampolines",
     "inject_trampolines",
     "patch_format_strings",
     "patch_rng_functions",
     "run_hardening_pipeline",
-    "run_injection_pipeline",
 ]

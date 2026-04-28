@@ -8,8 +8,8 @@ from typing import Any
 
 import lief
 
-from shstk_injector.relocation import relocate_instruction
-from shstk_injector.x86 import (
+from binary_hardening.relocation import relocate_instruction
+from binary_hardening.x86 import (
     NEAR_JUMP_SIZE,
     SkipFunction,
     assemble,

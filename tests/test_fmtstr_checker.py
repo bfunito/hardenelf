@@ -15,7 +15,7 @@ from fmtstr_checker.step import (
     FMTSTR_TRAMPOLINE_SECTION,
     FmtStrPatchResult,
 )
-from shstk_injector.inject import patch_format_strings
+from binary_hardening.api import patch_format_strings
 from tests.fixture_binaries import (
     BIN_DIR,
     build_fixtures,
