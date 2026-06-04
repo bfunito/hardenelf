@@ -24,6 +24,7 @@ from shstk_injector.expand import (
 )
 from shstk_injector.return_trampoline import (
     ReturnAddressAction,
+    ReturnPatchStrategy,
     ReturnSite,
     ReturnTrampoline,
     build_return_trampoline,
@@ -183,15 +184,15 @@ def inject_shadow_stack(
                 return_sites,
             )
 
-            entry_body = build_entry_trampoline(
+            entry_body = _build_entry_body(
                 assembler=assembler,
                 instructions=entry_instructions,
                 trampoline_address=shadow_cursor,
                 return_address=function.address + entry_overwritten_size,
                 saved_addrs_address=saved_addrs.virtual_address,
                 allow_absolute_saved_addrs=allow_absolute_saved_addrs,
+                return_sites=return_sites,
             )
-            entry_body = pad_to_alignment(entry_body)
             return_bodies: list[tuple[ReturnSite, int, bytes]] = []
             next_shadow_cursor = shadow_cursor + len(entry_body)
 
@@ -332,6 +333,49 @@ def _ensure_patch_ranges_do_not_overlap(
             raise SkipFunction("entry and return patches overlap")
 
 
+def _build_entry_body(
+    *,
+    assembler: Any,
+    instructions: list[Any],
+    trampoline_address: int,
+    return_address: int,
+    saved_addrs_address: int,
+    allow_absolute_saved_addrs: bool,
+    return_sites: list[ReturnSite],
+) -> bytes:
+    rbx_jump_target = _rbx_jump_target(return_sites, trampoline_address)
+
+    for _ in range(3):
+        body = build_entry_trampoline(
+            assembler=assembler,
+            instructions=instructions,
+            trampoline_address=trampoline_address,
+            return_address=return_address,
+            saved_addrs_address=saved_addrs_address,
+            allow_absolute_saved_addrs=allow_absolute_saved_addrs,
+            rbx_jump_target=rbx_jump_target,
+        )
+        body = pad_to_alignment(body)
+        next_rbx_jump_target = _rbx_jump_target(
+            return_sites,
+            trampoline_address + len(body),
+        )
+        if next_rbx_jump_target == rbx_jump_target:
+            return body
+        rbx_jump_target = next_rbx_jump_target
+
+    raise SkipFunction("could not stabilize RBX return trampoline address")
+
+
+def _rbx_jump_target(
+    return_sites: list[ReturnSite],
+    first_return_trampoline_address: int,
+) -> int | None:
+    if any(site.strategy is ReturnPatchStrategy.RBX_JUMP for site in return_sites):
+        return first_return_trampoline_address
+    return None
+
+
 def _patch_entry(
     binary: lief.ELF.Binary,
     function: _FunctionSymbol,
@@ -367,11 +411,16 @@ def _patch_returns(
     return_trampolines: list[ReturnTrampoline],
 ) -> None:
     for return_site, return_trampoline_address, return_body in return_bodies:
-        return_patch = make_jump(
-            return_site.patch_address,
-            return_trampoline_address,
-        )
-        return_patch += b"\x90" * (return_site.overwritten_size - NEAR_JUMP_SIZE)
+        if return_site.strategy is ReturnPatchStrategy.RBX_JUMP:
+            return_patch = b"\xff\xe3"
+        else:
+            return_patch = make_jump(
+                return_site.patch_address,
+                return_trampoline_address,
+            )
+            return_patch += b"\x90" * (
+                return_site.overwritten_size - NEAR_JUMP_SIZE
+            )
 
         binary.patch_address(return_trampoline_address, list(return_body))
         binary.patch_address(return_site.patch_address, list(return_patch))
@@ -384,6 +433,7 @@ def _patch_returns(
                 trampoline_address=return_trampoline_address,
                 overwritten_size=return_site.overwritten_size,
                 original_bytes=return_site.original_bytes,
+                strategy=return_site.strategy,
             )
         )
 

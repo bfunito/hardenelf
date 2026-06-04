@@ -2,8 +2,9 @@ import unittest
 
 import lief
 
-from tests.fixture_binaries import patch_fixture, run_binary
-from shstk_injector.return_trampoline import ReturnAddressAction
+from tests.fixture_binaries import patch_fixture, run_binary, run_pipeline_fixture
+from shstk_injector.return_trampoline import ReturnAddressAction, ReturnPatchStrategy
+from shstk_injector.steps.shadow_stack import SHADOW_STACK_STEP
 
 
 class ReturnTrampolineTests(unittest.TestCase):
@@ -52,6 +53,34 @@ class ReturnTrampolineTests(unittest.TestCase):
         result = run_binary(output_path)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stderr, message)
+
+    def test_canary_epilogue_uses_rbx_return_patch(self) -> None:
+        _, output_path, pipeline_result = run_pipeline_fixture(
+            self,
+            "canary_return",
+            steps=(SHADOW_STACK_STEP,),
+        )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertIn(
+            ReturnPatchStrategy.RBX_JUMP,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
+
+    def test_pie_canary_epilogue_uses_rbx_return_patch(self) -> None:
+        _, output_path, pipeline_result = run_pipeline_fixture(
+            self,
+            "canary_return_pie",
+            steps=(SHADOW_STACK_STEP,),
+        )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertIn(
+            ReturnPatchStrategy.RBX_JUMP,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
 
 
 def _is_pie(path) -> bool:

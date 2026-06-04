@@ -14,6 +14,7 @@ from binary_hardening.x86 import (
     assemble,
     ensure_relocatable_instruction,
     function_code_limit,
+    load_register_with_address,
     load_r11_with_address,
     make_jump,
 )
@@ -62,6 +63,7 @@ def build_entry_trampoline(
     return_address: int,
     saved_addrs_address: int,
     allow_absolute_saved_addrs: bool = True,
+    rbx_jump_target: int | None = None,
 ) -> bytes:
     register_save = assemble(
         assembler,
@@ -81,9 +83,13 @@ def build_entry_trampoline(
         allow_absolute=allow_absolute_saved_addrs,
     )
     prologue_tail_address = saved_addrs_load_address + len(saved_addrs_load)
+    record_size = 16 if rbx_jump_target is not None else 8
+    save_rbx = (
+        "mov qword ptr [r10 + 8], rbx" if rbx_jump_target is not None else ""
+    )
     prologue_tail = assemble(
         assembler,
-        """
+        f"""
             mov r10, qword ptr [r11]
             test r10, r10
             jne cursor_ready
@@ -91,7 +97,8 @@ def build_entry_trampoline(
         cursor_ready:
             mov rax, qword ptr [rsp + 32]
             mov qword ptr [r10], rax
-            add r10, 8
+            {save_rbx}
+            add r10, {record_size}
             mov qword ptr [r11], r10
             pop r11
             pop r10
@@ -101,6 +108,17 @@ def build_entry_trampoline(
         prologue_tail_address,
     )
     prologue = register_save + saved_addrs_load + prologue_tail
+
+    if rbx_jump_target is not None:
+        rbx_load_address = trampoline_address + len(prologue)
+        rbx_load = load_register_with_address(
+            assembler,
+            "rbx",
+            rbx_load_address,
+            rbx_jump_target,
+            allow_absolute=allow_absolute_saved_addrs,
+        )
+        prologue += rbx_load
 
     relocated_address = trampoline_address + len(prologue)
     relocated = bytearray()
@@ -113,4 +131,8 @@ def build_entry_trampoline(
         relocated.extend(relocated_instruction)
 
     jump_back_address = relocated_address + len(relocated)
-    return prologue + bytes(relocated) + make_jump(jump_back_address, return_address)
+    return (
+        prologue
+        + bytes(relocated)
+        + make_jump(jump_back_address, return_address)
+    )

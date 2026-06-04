@@ -9,7 +9,8 @@ import lief
 
 
 NEAR_JUMP_SIZE = 5
-RIP_RELATIVE_LEA_R11_SIZE = 7
+RIP_RELATIVE_LEA_SIZE = 7
+RIP_RELATIVE_LEA_R11_SIZE = RIP_RELATIVE_LEA_SIZE
 
 
 def make_disassembler() -> Any:
@@ -92,21 +93,42 @@ def load_r11_with_address(
     *,
     allow_absolute: bool,
 ) -> bytes:
-    displacement = target_address - (instruction_address + RIP_RELATIVE_LEA_R11_SIZE)
+    return load_register_with_address(
+        assembler,
+        "r11",
+        instruction_address,
+        target_address,
+        allow_absolute=allow_absolute,
+    )
+
+
+def load_register_with_address(
+    assembler: Any,
+    register: str,
+    instruction_address: int,
+    target_address: int,
+    *,
+    allow_absolute: bool,
+) -> bytes:
+    displacement = target_address - (instruction_address + RIP_RELATIVE_LEA_SIZE)
     if _fits_signed_int32(displacement):
         encoded = assemble(
             assembler,
-            f"lea r11, qword ptr [rip {_format_signed_hex(displacement)}]",
+            f"lea {register}, qword ptr [rip {_format_signed_hex(displacement)}]",
             instruction_address,
         )
-        if len(encoded) != RIP_RELATIVE_LEA_R11_SIZE:
+        if len(encoded) != RIP_RELATIVE_LEA_SIZE:
             raise SkipFunction("RIP-relative address load changed size")
         return encoded
 
     if not allow_absolute:
         raise SkipFunction("RIP-relative address load is outside signed 32-bit range")
 
-    return assemble(assembler, f"mov r11, 0x{target_address:x}", instruction_address)
+    return assemble(
+        assembler,
+        f"mov {register}, 0x{target_address:x}",
+        instruction_address,
+    )
 
 
 def make_jump(source: int, target: int) -> bytes:
