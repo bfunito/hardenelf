@@ -9,6 +9,7 @@ import lief
 
 
 NEAR_JUMP_SIZE = 5
+SHORT_JUMP_SIZE = 2
 RIP_RELATIVE_LEA_SIZE = 7
 RIP_RELATIVE_LEA_R11_SIZE = RIP_RELATIVE_LEA_SIZE
 
@@ -136,6 +137,13 @@ def make_jump(source: int, target: int) -> bytes:
     if not _fits_signed_int32(displacement):
         raise SkipFunction("relative jump target is outside the signed 32-bit range")
     return b"\xe9" + struct.pack("<i", displacement)
+
+
+def make_short_jump(source: int, target: int) -> bytes:
+    displacement = target - (source + SHORT_JUMP_SIZE)
+    if not -(2**7) <= displacement < 2**7:
+        raise SkipFunction("short jump target is outside the signed 8-bit range")
+    return b"\xeb" + struct.pack("b", displacement)
 
 
 def ranges_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:

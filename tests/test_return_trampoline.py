@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import lief
 
@@ -79,6 +80,57 @@ class ReturnTrampolineTests(unittest.TestCase):
         self.assertEqual(run_binary(output_path).returncode, 0)
         self.assertIn(
             ReturnPatchStrategy.RBX_JUMP,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
+
+    def test_rbx_epilogue_falls_back_to_short_code_cave_patch(self) -> None:
+        input_path, output_path, pipeline_result = run_pipeline_fixture(
+            self,
+            "short_return_fallback",
+            steps=(SHADOW_STACK_STEP,),
+        )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertNotEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertIn(
+            ReturnPatchStrategy.SHORT_CAVE,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
+
+    def test_pie_rbx_epilogue_falls_back_to_short_code_cave_patch(self) -> None:
+        input_path, output_path, pipeline_result = run_pipeline_fixture(
+            self,
+            "short_return_fallback_pie",
+            steps=(SHADOW_STACK_STEP,),
+        )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertTrue(_is_pie(input_path))
+        self.assertTrue(_is_pie(output_path))
+        self.assertNotEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertIn(
+            ReturnPatchStrategy.SHORT_CAVE,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
+
+    def test_short_jump_uses_donor_when_no_code_cave_is_available(self) -> None:
+        with patch(
+            "shstk_injector.return_trampoline._find_short_jump_code_cave",
+            return_value=None,
+        ):
+            input_path, output_path, pipeline_result = run_pipeline_fixture(
+                self,
+                "short_return_fallback",
+                steps=(SHADOW_STACK_STEP,),
+            )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertNotEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertIn(
+            ReturnPatchStrategy.SHORT_DONOR,
             {trampoline.strategy for trampoline in result.return_trampolines},
         )
 

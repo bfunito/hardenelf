@@ -11,12 +11,14 @@ import lief
 from binary_hardening.relocation import relocate_instruction
 from binary_hardening.x86 import (
     NEAR_JUMP_SIZE,
+    SHORT_JUMP_SIZE,
     SkipFunction,
     assemble,
     ensure_relocatable_instruction,
     function_code_limit,
     is_return_instruction,
     load_r11_with_address,
+    make_jump,
     ranges_overlap,
 )
 
@@ -33,6 +35,8 @@ class ReturnPatchStrategy(str, Enum):
 
     NEAR_JUMP = "near-jump"
     RBX_JUMP = "rbx-jump"
+    SHORT_CAVE = "short-cave"
+    SHORT_DONOR = "short-donor"
 
 
 @dataclass(frozen=True)
@@ -50,10 +54,31 @@ class ReturnTrampoline:
 
 
 @dataclass(frozen=True)
+class DonorPatch:
+    """In-range code reused as a bridge for a short return-site jump."""
+
+    instructions: tuple[Any, ...]
+
+    @property
+    def patch_address(self) -> int:
+        return self.instructions[0].address
+
+    @property
+    def overwritten_size(self) -> int:
+        return sum(instruction.size for instruction in self.instructions)
+
+    @property
+    def original_bytes(self) -> bytes:
+        return b"".join(bytes(instruction.bytes) for instruction in self.instructions)
+
+
+@dataclass(frozen=True)
 class ReturnSite:
     instructions: tuple[Any, ...]
     ret_instruction: Any
     strategy: ReturnPatchStrategy = ReturnPatchStrategy.NEAR_JUMP
+    bridge_address: int | None = None
+    donor: DonorPatch | None = None
 
     @property
     def patch_address(self) -> int:
@@ -68,6 +93,20 @@ class ReturnSite:
     def original_bytes(self) -> bytes:
         body = b"".join(bytes(instruction.bytes) for instruction in self.instructions)
         return body + bytes(self.ret_instruction.bytes)
+
+    @property
+    def patch_ranges(self) -> tuple[tuple[int, int], ...]:
+        ranges = [
+            (self.patch_address, self.patch_address + self.overwritten_size),
+        ]
+        if self.donor is not None:
+            ranges.append(
+                (
+                    self.donor.patch_address,
+                    self.donor.patch_address + self.donor.overwritten_size,
+                )
+            )
+        return tuple(ranges)
 
 
 def collect_return_sites(
@@ -107,6 +146,14 @@ def collect_return_sites(
         rbx_sites = _collect_rbx_return_sites(instructions, ret_indexes)
         if rbx_sites is not None:
             return rbx_sites
+        short_sites = _collect_short_jump_return_sites(
+            binary,
+            function,
+            instructions,
+            ret_indexes,
+        )
+        if short_sites is not None:
+            return short_sites
         raise near_jump_error
 
 
@@ -151,6 +198,28 @@ def build_return_trampoline(
         raise ValueError(f"unsupported return address action: {action}")
 
     return bytes(relocated) + check + bytes(return_site.ret_instruction.bytes)
+
+
+def build_donor_trampoline(
+    *,
+    assembler: Any,
+    donor: DonorPatch,
+    trampoline_address: int,
+) -> bytes:
+    relocated = bytearray()
+    for instruction in donor.instructions:
+        relocated_instruction = relocate_instruction(
+            assembler,
+            instruction,
+            trampoline_address + len(relocated),
+        )
+        relocated.extend(relocated_instruction)
+
+    jump_back_address = trampoline_address + len(relocated)
+    return bytes(relocated) + make_jump(
+        jump_back_address,
+        donor.patch_address + donor.overwritten_size,
+    )
 
 
 def _build_restore_block(
@@ -300,6 +369,221 @@ def _collect_rbx_return_sites(
     return None
 
 
+def _collect_short_jump_return_sites(
+    binary: lief.ELF.Binary,
+    function: Any,
+    instructions: list[Any],
+    ret_indexes: list[int],
+) -> list[ReturnSite] | None:
+    sites: list[ReturnSite] = []
+    reserved_ranges: list[tuple[int, int]] = []
+
+    for ret_index in ret_indexes:
+        site = _collect_two_byte_return_site(instructions, ret_index)
+        if site is None:
+            return None
+
+        cave_address = _find_short_jump_code_cave(
+            binary,
+            function,
+            site,
+            reserved_ranges,
+        )
+        if cave_address is not None:
+            short_site = ReturnSite(
+                site.instructions,
+                site.ret_instruction,
+                ReturnPatchStrategy.SHORT_CAVE,
+                bridge_address=cave_address,
+            )
+            sites.append(short_site)
+            reserved_ranges.extend(short_site.patch_ranges)
+            reserved_ranges.append((cave_address, cave_address + NEAR_JUMP_SIZE))
+            continue
+
+        donor = _find_short_jump_donor(instructions, site, reserved_ranges)
+        if donor is None:
+            return None
+
+        short_site = ReturnSite(
+            site.instructions,
+            site.ret_instruction,
+            ReturnPatchStrategy.SHORT_DONOR,
+            bridge_address=donor.patch_address + NEAR_JUMP_SIZE,
+            donor=donor,
+        )
+        sites.append(short_site)
+        reserved_ranges.extend(short_site.patch_ranges)
+
+    _ensure_non_overlapping_return_sites(sites)
+    _ensure_return_patches_are_not_branch_targets(instructions, sites)
+    return sites
+
+
+def _collect_two_byte_return_site(
+    instructions: list[Any],
+    ret_index: int,
+) -> ReturnSite | None:
+    ret_instruction = instructions[ret_index]
+    selected: list[Any] = []
+    total_size = ret_instruction.size
+
+    for instruction in reversed(instructions[:ret_index]):
+        try:
+            ensure_relocatable_instruction(instruction, "return")
+        except SkipFunction:
+            return None
+        selected.append(instruction)
+        total_size += instruction.size
+        if total_size == SHORT_JUMP_SIZE:
+            return ReturnSite(tuple(reversed(selected)), ret_instruction)
+        if total_size > SHORT_JUMP_SIZE:
+            return None
+
+    return None
+
+
+def _find_short_jump_code_cave(
+    binary: lief.ELF.Binary,
+    function: Any,
+    return_site: ReturnSite,
+    reserved_ranges: list[tuple[int, int]],
+) -> int | None:
+    section = function.section
+    section_start = section.virtual_address
+    section_end = section_start + section.size
+    patch_base = return_site.patch_address + SHORT_JUMP_SIZE
+    low = max(section_start, patch_base - 128)
+    high = min(section_end - NEAR_JUMP_SIZE, patch_base + 127)
+    if low > high:
+        return None
+
+    occupied_ranges = _function_ranges_in_section(binary, section)
+    candidates = range(low, high + 1)
+    return min(
+        (
+            address
+            for address in candidates
+            if _is_code_cave_range(
+                binary,
+                address,
+                NEAR_JUMP_SIZE,
+                occupied_ranges,
+                reserved_ranges,
+            )
+        ),
+        key=lambda address: abs(address - return_site.patch_address),
+        default=None,
+    )
+
+
+def _find_short_jump_donor(
+    instructions: list[Any],
+    return_site: ReturnSite,
+    reserved_ranges: list[tuple[int, int]],
+) -> DonorPatch | None:
+    patch_target_base = return_site.patch_address + SHORT_JUMP_SIZE
+    forbidden_ranges = list(reserved_ranges)
+    forbidden_ranges.extend(return_site.patch_ranges)
+
+    candidates: list[DonorPatch] = []
+    function_entry_range = (
+        instructions[0].address,
+        instructions[0].address + NEAR_JUMP_SIZE,
+    )
+    for start_index, start_instruction in enumerate(instructions):
+        short_jump_target = start_instruction.address + NEAR_JUMP_SIZE
+        if not -(2**7) <= short_jump_target - patch_target_base < 2**7:
+            continue
+
+        selected: list[Any] = []
+        total_size = 0
+        for instruction in instructions[start_index:]:
+            try:
+                ensure_relocatable_instruction(instruction, "donor")
+            except SkipFunction:
+                break
+            selected.append(instruction)
+            total_size += instruction.size
+            if total_size >= NEAR_JUMP_SIZE * 2:
+                donor = DonorPatch(tuple(selected))
+                donor_range = (
+                    donor.patch_address,
+                    donor.patch_address + donor.overwritten_size,
+                )
+                if not any(
+                    ranges_overlap(donor_range, seen) for seen in forbidden_ranges
+                ) and not ranges_overlap(
+                    donor_range,
+                    function_entry_range,
+                ) and not _has_internal_branch_target(instructions, donor_range):
+                    candidates.append(donor)
+                break
+
+    return min(
+        candidates,
+        key=lambda donor: abs(
+            (donor.patch_address + NEAR_JUMP_SIZE) - return_site.patch_address
+        ),
+        default=None,
+    )
+
+
+def _function_ranges_in_section(
+    binary: lief.ELF.Binary,
+    section: lief.ELF.Section,
+) -> tuple[tuple[int, int], ...]:
+    ranges: list[tuple[int, int]] = []
+    section_start = section.virtual_address
+    section_end = section_start + section.size
+    for symbol in binary.symtab_symbols:
+        if symbol.type != lief.ELF.Symbol.TYPE.FUNC:
+            continue
+        if symbol.value == 0 or symbol.size <= 0:
+            continue
+        start = int(symbol.value)
+        end = start + int(symbol.size)
+        if start < section_end and section_start < end:
+            ranges.append((start, end))
+    return tuple(ranges)
+
+
+def _is_code_cave_range(
+    binary: lief.ELF.Binary,
+    address: int,
+    size: int,
+    occupied_ranges: tuple[tuple[int, int], ...],
+    reserved_ranges: list[tuple[int, int]],
+) -> bool:
+    candidate = (address, address + size)
+    if any(ranges_overlap(candidate, seen) for seen in occupied_ranges):
+        return False
+    if any(ranges_overlap(candidate, seen) for seen in reserved_ranges):
+        return False
+
+    data = bytes(binary.get_content_from_virtual_address(address, size))
+    return _looks_like_padding(data)
+
+
+def _looks_like_padding(data: bytes) -> bool:
+    if all(byte in (0x00, 0x90, 0xCC) for byte in data):
+        return True
+
+    return data.startswith((b"\x0f\x1f", b"\x66\x0f\x1f", b"\x2e\x0f\x1f"))
+
+
+def _has_internal_branch_target(
+    instructions: list[Any],
+    patch_range: tuple[int, int],
+) -> bool:
+    start, end = patch_range
+    for instruction in instructions:
+        target = _direct_branch_target(instruction)
+        if target is not None and start < target < end:
+            return True
+    return False
+
+
 def _function_mentions_rbx(instructions: list[Any]) -> bool:
     import capstone.x86_const as x86
 
@@ -323,13 +607,10 @@ def _function_mentions_rbx(instructions: list[Any]) -> bool:
 def _ensure_non_overlapping_return_sites(return_sites: list[ReturnSite]) -> None:
     ranges: list[tuple[int, int]] = []
     for return_site in return_sites:
-        current_range = (
-            return_site.patch_address,
-            return_site.patch_address + return_site.overwritten_size,
-        )
-        if any(ranges_overlap(current_range, seen_range) for seen_range in ranges):
-            raise SkipFunction("return patch ranges overlap")
-        ranges.append(current_range)
+        for current_range in return_site.patch_ranges:
+            if any(ranges_overlap(current_range, seen_range) for seen_range in ranges):
+                raise SkipFunction("return patch ranges overlap")
+            ranges.append(current_range)
 
 
 def _ensure_return_patches_are_not_branch_targets(
@@ -337,11 +618,9 @@ def _ensure_return_patches_are_not_branch_targets(
     return_sites: list[ReturnSite],
 ) -> None:
     patch_ranges = tuple(
-        (
-            return_site.patch_address,
-            return_site.patch_address + return_site.overwritten_size,
-        )
+        patch_range
         for return_site in return_sites
+        for patch_range in return_site.patch_ranges
     )
 
     for instruction in instructions:

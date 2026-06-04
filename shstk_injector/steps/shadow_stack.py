@@ -27,6 +27,7 @@ from shstk_injector.return_trampoline import (
     ReturnPatchStrategy,
     ReturnSite,
     ReturnTrampoline,
+    build_donor_trampoline,
     build_return_trampoline,
     collect_return_sites,
 )
@@ -38,6 +39,7 @@ from binary_hardening.x86 import (
     make_assembler,
     make_disassembler,
     make_jump,
+    make_short_jump,
     pad_to_alignment,
     ranges_overlap,
 )
@@ -123,6 +125,15 @@ class _FunctionSymbol:
     section: lief.ELF.Section
 
 
+@dataclass(frozen=True)
+class _ReturnBody:
+    site: ReturnSite
+    trampoline_address: int
+    body: bytes
+    donor_trampoline_address: int | None = None
+    donor_body: bytes | None = None
+
+
 def inject_shadow_stack(
     input_path: Path | str,
     output_path: Path | str,
@@ -193,10 +204,22 @@ def inject_shadow_stack(
                 allow_absolute_saved_addrs=allow_absolute_saved_addrs,
                 return_sites=return_sites,
             )
-            return_bodies: list[tuple[ReturnSite, int, bytes]] = []
+            return_bodies: list[_ReturnBody] = []
             next_shadow_cursor = shadow_cursor + len(entry_body)
 
             for return_site in return_sites:
+                donor_trampoline_address = None
+                donor_body = None
+                if return_site.donor is not None:
+                    donor_trampoline_address = next_shadow_cursor
+                    donor_body = build_donor_trampoline(
+                        assembler=assembler,
+                        donor=return_site.donor,
+                        trampoline_address=donor_trampoline_address,
+                    )
+                    donor_body = pad_to_alignment(donor_body)
+                    next_shadow_cursor += len(donor_body)
+
                 return_body = build_return_trampoline(
                     assembler=assembler,
                     return_site=return_site,
@@ -207,7 +230,15 @@ def inject_shadow_stack(
                     allow_absolute_saved_addrs=allow_absolute_saved_addrs,
                 )
                 return_body = pad_to_alignment(return_body)
-                return_bodies.append((return_site, next_shadow_cursor, return_body))
+                return_bodies.append(
+                    _ReturnBody(
+                        site=return_site,
+                        trampoline_address=next_shadow_cursor,
+                        body=return_body,
+                        donor_trampoline_address=donor_trampoline_address,
+                        donor_body=donor_body,
+                    )
+                )
                 next_shadow_cursor += len(return_body)
 
             if next_shadow_cursor > shadow_end:
@@ -325,12 +356,9 @@ def _ensure_patch_ranges_do_not_overlap(
         entry_address + entry_overwritten_size,
     )
     for return_site in return_sites:
-        return_patch_range = (
-            return_site.patch_address,
-            return_site.patch_address + return_site.overwritten_size,
-        )
-        if ranges_overlap(entry_patch_range, return_patch_range):
-            raise SkipFunction("entry and return patches overlap")
+        for return_patch_range in return_site.patch_ranges:
+            if ranges_overlap(entry_patch_range, return_patch_range):
+                raise SkipFunction("entry and return patches overlap")
 
 
 def _build_entry_body(
@@ -407,12 +435,24 @@ def _patch_entry(
 def _patch_returns(
     binary: lief.ELF.Binary,
     function: _FunctionSymbol,
-    return_bodies: list[tuple[ReturnSite, int, bytes]],
+    return_bodies: list[_ReturnBody],
     return_trampolines: list[ReturnTrampoline],
 ) -> None:
-    for return_site, return_trampoline_address, return_body in return_bodies:
+    for return_body in return_bodies:
+        return_site = return_body.site
+        return_trampoline_address = return_body.trampoline_address
         if return_site.strategy is ReturnPatchStrategy.RBX_JUMP:
             return_patch = b"\xff\xe3"
+        elif return_site.strategy in (
+            ReturnPatchStrategy.SHORT_CAVE,
+            ReturnPatchStrategy.SHORT_DONOR,
+        ):
+            if return_site.bridge_address is None:
+                raise SkipFunction("short return patch is missing bridge address")
+            return_patch = make_short_jump(
+                return_site.patch_address,
+                return_site.bridge_address,
+            )
         else:
             return_patch = make_jump(
                 return_site.patch_address,
@@ -422,7 +462,40 @@ def _patch_returns(
                 return_site.overwritten_size - NEAR_JUMP_SIZE
             )
 
-        binary.patch_address(return_trampoline_address, list(return_body))
+        if return_site.strategy is ReturnPatchStrategy.SHORT_CAVE:
+            if return_site.bridge_address is None:
+                raise SkipFunction("short cave patch is missing bridge address")
+            bridge_patch = make_jump(
+                return_site.bridge_address,
+                return_trampoline_address,
+            )
+            binary.patch_address(return_site.bridge_address, list(bridge_patch))
+        elif return_site.strategy is ReturnPatchStrategy.SHORT_DONOR:
+            if return_site.donor is None:
+                raise SkipFunction("short donor patch is missing donor instructions")
+            if return_body.donor_trampoline_address is None:
+                raise SkipFunction("short donor patch is missing trampoline address")
+            if return_body.donor_body is None:
+                raise SkipFunction("short donor patch is missing trampoline body")
+
+            donor_patch = make_jump(
+                return_site.donor.patch_address,
+                return_body.donor_trampoline_address,
+            )
+            donor_patch += make_jump(
+                return_site.donor.patch_address + NEAR_JUMP_SIZE,
+                return_trampoline_address,
+            )
+            donor_patch += b"\x90" * (
+                return_site.donor.overwritten_size - (NEAR_JUMP_SIZE * 2)
+            )
+            binary.patch_address(
+                return_body.donor_trampoline_address,
+                list(return_body.donor_body),
+            )
+            binary.patch_address(return_site.donor.patch_address, list(donor_patch))
+
+        binary.patch_address(return_trampoline_address, list(return_body.body))
         binary.patch_address(return_site.patch_address, list(return_patch))
         return_trampolines.append(
             ReturnTrampoline(

@@ -21,6 +21,7 @@ BINARIES := \
 	$(BIN_DIR)/entry_smoke \
 	$(BIN_DIR)/return_restore \
 	$(BIN_DIR)/canary_return \
+	$(BIN_DIR)/short_return_fallback \
 	$(BIN_DIR)/rip_relative_entry \
 	$(BIN_DIR)/rng_smoke \
 	$(BIN_DIR)/fmtstr_smoke \
@@ -28,6 +29,7 @@ BINARIES := \
 	$(BIN_DIR)/entry_smoke_pie \
 	$(BIN_DIR)/return_restore_pie \
 	$(BIN_DIR)/canary_return_pie \
+	$(BIN_DIR)/short_return_fallback_pie \
 	$(BIN_DIR)/rip_relative_entry_pie \
 	$(BIN_DIR)/rng_smoke_pie \
 	$(BIN_DIR)/fmtstr_smoke_pie \
@@ -49,6 +51,9 @@ $(BIN_DIR)/return_restore: $(SRC_DIR)/return_restore.c | $(BIN_DIR)
 $(BIN_DIR)/canary_return: $(SRC_DIR)/canary_return.c | $(BIN_DIR)
 	$(CC) $(CANARY_CFLAGS) $< -o $@
 
+$(BIN_DIR)/short_return_fallback: $(SRC_DIR)/short_return_fallback.c | $(BIN_DIR)
+	$(CC) $(CANARY_CFLAGS) $< -o $@
+
 $(BIN_DIR)/rip_relative_entry: $(SRC_DIR)/rip_relative_entry.c | $(BIN_DIR)
 	$(CC) $(COMMON_CFLAGS) $< -o $@
 
@@ -68,6 +73,9 @@ $(BIN_DIR)/return_restore_pie: $(SRC_DIR)/return_restore.c | $(BIN_DIR)
 	$(CC) $(RETURN_PIE_CFLAGS) $< -o $@
 
 $(BIN_DIR)/canary_return_pie: $(SRC_DIR)/canary_return.c | $(BIN_DIR)
+	$(CC) $(CANARY_PIE_CFLAGS) $< -o $@
+
+$(BIN_DIR)/short_return_fallback_pie: $(SRC_DIR)/short_return_fallback.c | $(BIN_DIR)
 	$(CC) $(CANARY_PIE_CFLAGS) $< -o $@
 
 $(BIN_DIR)/rip_relative_entry_pie: $(SRC_DIR)/rip_relative_entry.c | $(BIN_DIR)
