@@ -290,6 +290,11 @@ def _print_step_result(
         print(f"{indent}return trampolines: {len(result.return_trampolines)}")
         if result.skipped:
             print(f"{indent}skipped functions: {len(result.skipped)}")
+            for skipped in result.skipped:
+                print(
+                    f"{indent}  - {skipped.function_name} "
+                    f"@ 0x{skipped.function_address:x}: {skipped.reason}"
+                )
 
 
 if __name__ == "__main__":

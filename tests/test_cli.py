@@ -1,0 +1,54 @@
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+import unittest
+
+from binary_hardening.cli import _print_step_result
+from shstk_injector.entry_trampoline import EntryTrampoline
+from shstk_injector.expand import AddedSection
+from shstk_injector.return_trampoline import ReturnTrampoline
+from shstk_injector.steps.shadow_stack import InjectionResult, SkippedFunction
+
+
+class CliOutputTests(unittest.TestCase):
+    def test_shadow_stack_result_prints_skipped_function_details(self) -> None:
+        result = InjectionResult(
+            output_path=Path("patched"),
+            shadow=AddedSection(".shadow", 0x500000, 0x1000, 0x100, ("ALLOC",)),
+            saved_addrs=AddedSection(".saved_addrs", 0x501000, 0x2000, 0x100, ("WRITE",)),
+            trampolines=(
+                EntryTrampoline("patched_fn", 0x401000, 0x500000, 5, b"\x90" * 5),
+            ),
+            skipped=(
+                SkippedFunction(
+                    "tiny_fn",
+                    0x401020,
+                    "function is smaller than a near jump",
+                ),
+            ),
+            return_trampolines=(
+                ReturnTrampoline(
+                    "patched_fn",
+                    0x401000,
+                    0x401010,
+                    0x40100b,
+                    0x500040,
+                    5,
+                    b"\xc3",
+                ),
+            ),
+        )
+
+        output = StringIO()
+        with redirect_stdout(output):
+            _print_step_result(result)
+
+        self.assertIn("skipped functions: 1", output.getvalue())
+        self.assertIn(
+            "  - tiny_fn @ 0x401020: function is smaller than a near jump",
+            output.getvalue(),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
