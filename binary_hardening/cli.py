@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from importlib.metadata import PackageNotFoundError, version
+import sys
 from pathlib import Path
 
 from fmtstr_checker.step import (
@@ -23,6 +24,7 @@ from shstk_injector.steps.shadow_stack import (
     SHADOW_STACK_STEP,
     InjectionResult,
     ShadowStackStepOptions,
+    TrapFallbackDecision,
 )
 
 from .api import run_hardening_pipeline
@@ -47,6 +49,11 @@ def main(argv: list[str] | None = None) -> int:
     _validate_fmtstr_selection(parser, args, selected_steps)
 
     try:
+        trap_fallback_callback = (
+            _prompt_trap_fallback
+            if args.trap_fallback == TrapFallbackDecision.ASK.value
+            else None
+        )
         result = run_hardening_pipeline(
             args.input,
             args.output,
@@ -58,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
                     return_address_action=args.return_address_action,
                     crash_message=args.crash_message,
                     expand_only=args.expand_only,
+                    trap_fallback=args.trap_fallback,
+                    trap_fallback_callback=trap_fallback_callback,
                 ),
                 fmtstr_checker=FmtStrCheckerStepOptions(
                     trampoline_size=args.fmtstr_trampoline_size,
@@ -146,6 +155,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="message to write to stderr before crashing in compare-crash mode",
     )
     parser.add_argument(
+        "--trap-fallback",
+        choices=[decision.value for decision in TrapFallbackDecision],
+        default=TrapFallbackDecision.ASK.value,
+        help=(
+            "one-byte trap fallback for return sites that cannot use jump "
+            "strategies; ask prompts per function, allow always uses it, skip never "
+            "uses it"
+        ),
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {_package_version()}",
@@ -184,6 +203,7 @@ def _validate_shadow_stack_selection(
         or args.saved_addrs_size != 0x1000
         or args.return_address_action != ReturnAddressAction.RESTORE.value
         or args.crash_message is not None
+        or args.trap_fallback != TrapFallbackDecision.ASK.value
     )
     if shadow_stack_options_requested:
         parser.error("shadow-stack options require the shadow-stack pipeline step")
@@ -295,6 +315,22 @@ def _print_step_result(
                     f"{indent}  - {skipped.function_name} "
                     f"@ 0x{skipped.function_address:x}: {skipped.reason}"
                 )
+
+
+def _prompt_trap_fallback(function_name: str, function_address: int, reason: str) -> bool:
+    if not sys.stdin.isatty():
+        return False
+
+    prompt = (
+        "shadow-stack trap fallback needed for "
+        f"{function_name} @ 0x{function_address:x}: {reason}\n"
+        "Use costly SIGTRAP-based return trampoline for this function? [y/N] "
+    )
+    try:
+        answer = input(prompt)
+    except EOFError:
+        return False
+    return answer.strip().lower() in {"y", "yes"}
 
 
 if __name__ == "__main__":

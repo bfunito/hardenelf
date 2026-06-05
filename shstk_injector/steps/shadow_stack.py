@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Iterable
 
@@ -34,6 +36,7 @@ from shstk_injector.return_trampoline import (
 from binary_hardening.x86 import (
     NEAR_JUMP_SIZE,
     SkipFunction,
+    assemble,
     ensure_x86_64,
     is_pie_binary,
     make_assembler,
@@ -48,6 +51,15 @@ from binary_hardening.x86 import (
 SHADOW_STACK_CURSOR_SIZE = 8
 SHADOW_STACK_STEP = "shadow-stack"
 _SKIPPED_ENTRY_SYMBOLS = frozenset({"_start"})
+_TRAP_INSTRUCTION = b"\xcc"
+
+
+class TrapFallbackDecision(str, Enum):
+    """User policy for costly one-byte trap return trampolines."""
+
+    ASK = "ask"
+    ALLOW = "allow"
+    SKIP = "skip"
 
 
 @dataclass(frozen=True)
@@ -81,6 +93,8 @@ class ShadowStackStepOptions:
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE
     crash_message: str | bytes | None = None
     expand_only: bool = False
+    trap_fallback: TrapFallbackDecision | str = TrapFallbackDecision.ASK
+    trap_fallback_callback: Callable[[str, int, str], bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +128,8 @@ class ShadowStackStep:
             saved_addrs_size=self.options.saved_addrs_size,
             return_address_action=self.options.return_address_action,
             crash_message=self.options.crash_message,
+            trap_fallback=self.options.trap_fallback,
+            trap_fallback_callback=self.options.trap_fallback_callback,
         )
 
 
@@ -134,6 +150,12 @@ class _ReturnBody:
     donor_body: bytes | None = None
 
 
+@dataclass(frozen=True)
+class _TrapEntry:
+    trapped_rip: int
+    trampoline_address: int
+
+
 def inject_shadow_stack(
     input_path: Path | str,
     output_path: Path | str,
@@ -142,11 +164,14 @@ def inject_shadow_stack(
     saved_addrs_size: int = 0x1000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
+    trap_fallback: TrapFallbackDecision | str = TrapFallbackDecision.ASK,
+    trap_fallback_callback: Callable[[str, int, str], bool] | None = None,
 ) -> InjectionResult:
     """Expand an ELF binary and patch function entries and returns."""
 
     action = _normalize_return_address_action(return_address_action)
     crash_message_bytes = _normalize_crash_message(action, crash_message)
+    trap_decision = _normalize_trap_fallback_decision(trap_fallback)
 
     disassembler = make_disassembler()
     assembler = make_assembler()
@@ -175,6 +200,7 @@ def inject_shadow_stack(
     shadow_end = shadow.virtual_address + shadow.size
     trampolines: list[EntryTrampoline] = []
     return_trampolines: list[ReturnTrampoline] = []
+    trap_entries: list[_TrapEntry] = []
     skipped: list[SkippedFunction] = []
 
     for function in _iter_function_symbols(binary):
@@ -184,7 +210,24 @@ def inject_shadow_stack(
                 disassembler,
                 function,
             )
-            return_sites = collect_return_sites(binary, disassembler, function)
+            try:
+                return_sites = collect_return_sites(binary, disassembler, function)
+            except SkipFunction as exc:
+                if not _allow_trap_fallback(
+                    trap_decision,
+                    trap_fallback_callback,
+                    function,
+                    str(exc),
+                ):
+                    raise SkipFunction(
+                        _trap_fallback_skip_reason(trap_decision, str(exc))
+                    ) from exc
+                return_sites = collect_return_sites(
+                    binary,
+                    disassembler,
+                    function,
+                    allow_trap_fallback=True,
+                )
 
             entry_overwritten_size = sum(
                 instruction.size for instruction in entry_instructions
@@ -265,6 +308,7 @@ def inject_shadow_stack(
                 function,
                 return_bodies,
                 return_trampolines,
+                trap_entries,
             )
 
             shadow_cursor = next_shadow_cursor
@@ -273,6 +317,19 @@ def inject_shadow_stack(
 
     if not trampolines:
         raise ValueError("no complete function trampolines were written")
+
+    if trap_entries:
+        installer = _build_trap_installer(
+            assembler,
+            installer_address=shadow_cursor,
+            original_entrypoint=binary.entrypoint,
+            trap_entries=trap_entries,
+        )
+        installer = pad_to_alignment(installer)
+        if shadow_cursor + len(installer) > shadow_end:
+            raise ValueError("not enough room left in .shadow for SIGTRAP handler")
+        binary.patch_address(shadow_cursor, list(installer))
+        binary.header.entrypoint = shadow_cursor
 
     binary.write(output_file)
     rewritten = lief.parse(output_file)
@@ -313,6 +370,42 @@ def _normalize_crash_message(
     if isinstance(crash_message, str):
         return crash_message.encode()
     return bytes(crash_message)
+
+
+def _normalize_trap_fallback_decision(
+    decision: TrapFallbackDecision | str,
+) -> TrapFallbackDecision:
+    if isinstance(decision, TrapFallbackDecision):
+        return decision
+    try:
+        return TrapFallbackDecision(decision)
+    except ValueError as exc:
+        supported = ", ".join(item.value for item in TrapFallbackDecision)
+        raise ValueError(f"trap fallback must be one of: {supported}") from exc
+
+
+def _allow_trap_fallback(
+    decision: TrapFallbackDecision,
+    callback: Callable[[str, int, str], bool] | None,
+    function: _FunctionSymbol,
+    reason: str,
+) -> bool:
+    if decision is TrapFallbackDecision.ALLOW:
+        return True
+    if decision is TrapFallbackDecision.SKIP:
+        return False
+    if callback is None:
+        return False
+    return bool(callback(function.name, function.address, reason))
+
+
+def _trap_fallback_skip_reason(
+    decision: TrapFallbackDecision,
+    reason: str,
+) -> str:
+    if decision is TrapFallbackDecision.SKIP:
+        return f"trap fallback disabled after jump strategies failed: {reason}"
+    return f"trap fallback declined after jump strategies failed: {reason}"
 
 
 def _iter_function_symbols(binary: lief.ELF.Binary) -> Iterable[_FunctionSymbol]:
@@ -437,12 +530,21 @@ def _patch_returns(
     function: _FunctionSymbol,
     return_bodies: list[_ReturnBody],
     return_trampolines: list[ReturnTrampoline],
+    trap_entries: list[_TrapEntry],
 ) -> None:
     for return_body in return_bodies:
         return_site = return_body.site
         return_trampoline_address = return_body.trampoline_address
         if return_site.strategy is ReturnPatchStrategy.RBX_JUMP:
             return_patch = b"\xff\xe3"
+        elif return_site.strategy is ReturnPatchStrategy.TRAP:
+            return_patch = _TRAP_INSTRUCTION
+            trap_entries.append(
+                _TrapEntry(
+                    trapped_rip=return_site.patch_address + len(_TRAP_INSTRUCTION),
+                    trampoline_address=return_trampoline_address,
+                )
+            )
         elif return_site.strategy in (
             ReturnPatchStrategy.SHORT_CAVE,
             ReturnPatchStrategy.SHORT_DONOR,
@@ -511,11 +613,85 @@ def _patch_returns(
         )
 
 
+def _build_trap_installer(
+    assembler: Any,
+    *,
+    installer_address: int,
+    original_entrypoint: int,
+    trap_entries: list[_TrapEntry],
+) -> bytes:
+    table_rows = "\n".join(
+        f".quad 0x{entry.trapped_rip:x}, 0x{entry.trampoline_address:x}"
+        for entry in trap_entries
+    )
+    sa_flags = 0x04000000 | 0x00000004  # SA_RESTORER | SA_SIGINFO
+    return assemble(
+        assembler,
+        f"""
+        installer_base:
+            sub rsp, 0x28
+            lea rax, qword ptr [rip + trap_handler]
+            mov qword ptr [rsp], rax
+            mov qword ptr [rsp + 8], 0x{sa_flags:x}
+            lea rax, qword ptr [rip + trap_restorer]
+            mov qword ptr [rsp + 16], rax
+            mov qword ptr [rsp + 24], 0
+            lea rsi, qword ptr [rsp]
+            xor edx, edx
+            mov edi, 5
+            mov r10d, 8
+            mov eax, 13
+            syscall
+            add rsp, 0x28
+            jmp original_entrypoint
+
+        trap_handler:
+            cmp edi, 5
+            jne unknown_trap
+            mov rax, qword ptr [rdx + 0xa8]
+            lea r8, qword ptr [rip + installer_base]
+            movabs r9, 0x{installer_address:x}
+            sub r8, r9
+            lea r10, qword ptr [rip + trap_table]
+            mov ecx, {len(trap_entries)}
+        trap_loop:
+            test ecx, ecx
+            je unknown_trap
+            mov r11, qword ptr [r10]
+            add r11, r8
+            cmp rax, r11
+            je trap_found
+            add r10, 16
+            dec ecx
+            jmp trap_loop
+        trap_found:
+            mov r11, qword ptr [r10 + 8]
+            add r11, r8
+            mov qword ptr [rdx + 0xa8], r11
+            ret
+        unknown_trap:
+            ud2
+
+        trap_restorer:
+            mov eax, 15
+            syscall
+
+        trap_table:
+            {table_rows}
+
+        original_entrypoint:
+            jmp 0x{original_entrypoint:x}
+        """,
+        installer_address,
+    )
+
+
 __all__ = [
     "InjectionResult",
     "SHADOW_STACK_STEP",
     "ShadowStackStep",
     "ShadowStackStepOptions",
     "SkippedFunction",
+    "TrapFallbackDecision",
     "inject_shadow_stack",
 ]

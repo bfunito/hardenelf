@@ -5,7 +5,7 @@ import lief
 
 from tests.fixture_binaries import patch_fixture, run_binary, run_pipeline_fixture
 from shstk_injector.return_trampoline import ReturnAddressAction, ReturnPatchStrategy
-from shstk_injector.steps.shadow_stack import SHADOW_STACK_STEP
+from shstk_injector.steps.shadow_stack import SHADOW_STACK_STEP, TrapFallbackDecision
 
 
 class ReturnTrampolineTests(unittest.TestCase):
@@ -131,6 +131,88 @@ class ReturnTrampolineTests(unittest.TestCase):
         self.assertEqual(run_binary(output_path).returncode, 0)
         self.assertIn(
             ReturnPatchStrategy.SHORT_DONOR,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
+
+    def test_trap_fallback_handles_return_when_jump_strategies_fail(self) -> None:
+        with (
+            patch(
+                "shstk_injector.return_trampoline._find_short_jump_code_cave",
+                return_value=None,
+            ),
+            patch(
+                "shstk_injector.return_trampoline._find_short_jump_donor",
+                return_value=None,
+            ),
+        ):
+            input_path, output_path, pipeline_result = run_pipeline_fixture(
+                self,
+                "short_return_fallback",
+                steps=(SHADOW_STACK_STEP,),
+                trap_fallback=TrapFallbackDecision.ALLOW,
+                shadow_size=0x5000,
+            )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertNotEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertIn(
+            ReturnPatchStrategy.TRAP,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
+
+    def test_pie_trap_fallback_handles_return_when_jump_strategies_fail(self) -> None:
+        with (
+            patch(
+                "shstk_injector.return_trampoline._find_short_jump_code_cave",
+                return_value=None,
+            ),
+            patch(
+                "shstk_injector.return_trampoline._find_short_jump_donor",
+                return_value=None,
+            ),
+        ):
+            input_path, output_path, pipeline_result = run_pipeline_fixture(
+                self,
+                "short_return_fallback_pie",
+                steps=(SHADOW_STACK_STEP,),
+                trap_fallback=TrapFallbackDecision.ALLOW,
+                shadow_size=0x5000,
+            )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertTrue(_is_pie(input_path))
+        self.assertTrue(_is_pie(output_path))
+        self.assertNotEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertIn(
+            ReturnPatchStrategy.TRAP,
+            {trampoline.strategy for trampoline in result.return_trampolines},
+        )
+
+    def test_trap_fallback_skip_leaves_function_unpatched(self) -> None:
+        with (
+            patch(
+                "shstk_injector.return_trampoline._find_short_jump_code_cave",
+                return_value=None,
+            ),
+            patch(
+                "shstk_injector.return_trampoline._find_short_jump_donor",
+                return_value=None,
+            ),
+        ):
+            _, _, pipeline_result = run_pipeline_fixture(
+                self,
+                "short_return_fallback",
+                steps=(SHADOW_STACK_STEP,),
+                trap_fallback=TrapFallbackDecision.SKIP,
+            )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        skipped = {function.function_name for function in result.skipped}
+        self.assertIn("short_return_helper", skipped)
+        self.assertNotIn(
+            ReturnPatchStrategy.TRAP,
             {trampoline.strategy for trampoline in result.return_trampolines},
         )
 

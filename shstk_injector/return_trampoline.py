@@ -37,6 +37,7 @@ class ReturnPatchStrategy(str, Enum):
     RBX_JUMP = "rbx-jump"
     SHORT_CAVE = "short-cave"
     SHORT_DONOR = "short-donor"
+    TRAP = "trap"
 
 
 @dataclass(frozen=True)
@@ -82,15 +83,21 @@ class ReturnSite:
 
     @property
     def patch_address(self) -> int:
+        if self.strategy is ReturnPatchStrategy.TRAP:
+            return self.ret_instruction.address
         return self.instructions[0].address
 
     @property
     def overwritten_size(self) -> int:
+        if self.strategy is ReturnPatchStrategy.TRAP:
+            return 1
         instruction_size = sum(instruction.size for instruction in self.instructions)
         return instruction_size + self.ret_instruction.size
 
     @property
     def original_bytes(self) -> bytes:
+        if self.strategy is ReturnPatchStrategy.TRAP:
+            return bytes(self.ret_instruction.bytes[:1])
         body = b"".join(bytes(instruction.bytes) for instruction in self.instructions)
         return body + bytes(self.ret_instruction.bytes)
 
@@ -113,6 +120,8 @@ def collect_return_sites(
     binary: lief.ELF.Binary,
     disassembler: Any,
     function: Any,
+    *,
+    allow_trap_fallback: bool = False,
 ) -> list[ReturnSite]:
     if function.size <= 0:
         raise SkipFunction("function size is unknown")
@@ -154,7 +163,27 @@ def collect_return_sites(
         )
         if short_sites is not None:
             return short_sites
+        if allow_trap_fallback:
+            return collect_trap_return_sites(instructions, ret_indexes)
         raise near_jump_error
+
+
+def collect_trap_return_sites(
+    instructions: list[Any],
+    ret_indexes: list[int],
+) -> list[ReturnSite]:
+    """Return one-byte trap patches for return sites no jump strategy can cover."""
+
+    sites = [
+        ReturnSite(
+            (),
+            instructions[ret_index],
+            ReturnPatchStrategy.TRAP,
+        )
+        for ret_index in ret_indexes
+    ]
+    _ensure_non_overlapping_return_sites(sites)
+    return sites
 
 
 def build_return_trampoline(

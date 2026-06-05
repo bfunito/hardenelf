@@ -95,6 +95,10 @@ hardenelf \
   ./input-binary ./patched-binary
 ```
 
+If all jump-based return patch strategies fail, `--trap-fallback ask` prompts
+before using the costly one-byte `int3`/`SIGTRAP` fallback. Use
+`--trap-fallback allow` or `--trap-fallback skip` for non-interactive runs.
+
 Only expand the binary with the sections required by the `shadow-stack` step:
 
 ```bash

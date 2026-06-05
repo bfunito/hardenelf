@@ -22,6 +22,7 @@ from shstk_injector.steps.shadow_stack import (
     InjectionResult,
     ShadowStackStepOptions,
     SkippedFunction,
+    TrapFallbackDecision,
 )
 
 from .pipeline import PipelineResult, run_pipeline
@@ -60,6 +61,7 @@ def inject_trampolines(
     saved_addrs_size: int = 0x1000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
+    trap_fallback: TrapFallbackDecision | str = TrapFallbackDecision.ASK,
 ) -> InjectionResult:
     """Run only the shadow-stack step."""
 
@@ -72,6 +74,7 @@ def inject_trampolines(
             saved_addrs_size=saved_addrs_size,
             return_address_action=return_address_action,
             crash_message=crash_message,
+            trap_fallback=trap_fallback,
         ),
     )
     shadow_stack_result = result.result_for_step(SHADOW_STACK_STEP)

@@ -8,7 +8,10 @@ import unittest
 
 from binary_hardening.api import inject_trampolines, run_hardening_pipeline
 from shstk_injector.return_trampoline import ReturnAddressAction
-from shstk_injector.steps.shadow_stack import ShadowStackStepOptions
+from shstk_injector.steps.shadow_stack import (
+    ShadowStackStepOptions,
+    TrapFallbackDecision,
+)
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -51,6 +54,7 @@ def patch_fixture(
     saved_addrs_size: int = 0x2000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
+    trap_fallback: TrapFallbackDecision | str = TrapFallbackDecision.ASK,
 ) -> tuple[Path, Path]:
     build_fixtures(test_case)
     require_injector_dependencies(test_case)
@@ -66,6 +70,7 @@ def patch_fixture(
         saved_addrs_size=saved_addrs_size,
         return_address_action=return_address_action,
         crash_message=crash_message,
+        trap_fallback=trap_fallback,
     )
     return input_path, output_path
 
@@ -79,6 +84,7 @@ def run_pipeline_fixture(
     saved_addrs_size: int = 0x2000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
+    trap_fallback: TrapFallbackDecision | str = TrapFallbackDecision.ASK,
 ) -> tuple[Path, Path, object]:
     build_fixtures(test_case)
     require_injector_dependencies(test_case)
@@ -98,6 +104,7 @@ def run_pipeline_fixture(
             saved_addrs_size=saved_addrs_size,
             return_address_action=return_address_action,
             crash_message=crash_message,
+            trap_fallback=trap_fallback,
         ),
     )
     return input_path, output_path, result
