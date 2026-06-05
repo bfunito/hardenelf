@@ -29,6 +29,7 @@ from shstk_injector.return_trampoline import (
     ReturnPatchStrategy,
     ReturnSite,
     ReturnTrampoline,
+    TrapFallbackCandidate,
     build_donor_trampoline,
     build_return_trampoline,
     collect_return_sites,
@@ -212,7 +213,7 @@ def inject_shadow_stack(
             )
             try:
                 return_sites = collect_return_sites(binary, disassembler, function)
-            except SkipFunction as exc:
+            except TrapFallbackCandidate as exc:
                 if not _allow_trap_fallback(
                     trap_decision,
                     trap_fallback_callback,

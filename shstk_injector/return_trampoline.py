@@ -40,6 +40,10 @@ class ReturnPatchStrategy(str, Enum):
     TRAP = "trap"
 
 
+class TrapFallbackCandidate(SkipFunction):
+    """Raised when only return jump patching failed and trap fallback can help."""
+
+
 @dataclass(frozen=True)
 class ReturnTrampoline:
     """Summary of a return trampoline written for one return site."""
@@ -165,7 +169,7 @@ def collect_return_sites(
             return short_sites
         if allow_trap_fallback:
             return collect_trap_return_sites(instructions, ret_indexes)
-        raise near_jump_error
+        raise TrapFallbackCandidate(str(near_jump_error)) from near_jump_error
 
 
 def collect_trap_return_sites(

@@ -1,10 +1,17 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import lief
 
+from binary_hardening.x86 import SkipFunction
 from tests.fixture_binaries import patch_fixture, run_binary, run_pipeline_fixture
-from shstk_injector.return_trampoline import ReturnAddressAction, ReturnPatchStrategy
+from shstk_injector.return_trampoline import (
+    ReturnAddressAction,
+    ReturnPatchStrategy,
+    TrapFallbackCandidate,
+    collect_return_sites,
+)
 from shstk_injector.steps.shadow_stack import SHADOW_STACK_STEP, TrapFallbackDecision
 
 
@@ -215,6 +222,15 @@ class ReturnTrampolineTests(unittest.TestCase):
             ReturnPatchStrategy.TRAP,
             {trampoline.strategy for trampoline in result.return_trampolines},
         )
+
+    def test_unknown_function_size_is_not_trap_fallback_candidate(self) -> None:
+        function = SimpleNamespace(size=0)
+
+        with self.assertRaises(SkipFunction) as raised:
+            collect_return_sites(None, None, function)
+
+        self.assertEqual(str(raised.exception), "function size is unknown")
+        self.assertNotIsInstance(raised.exception, TrapFallbackCandidate)
 
 
 def _is_pie(path) -> bool:
