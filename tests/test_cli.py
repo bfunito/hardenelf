@@ -4,6 +4,7 @@ from pathlib import Path
 import unittest
 
 from binary_hardening.cli import _print_step_result
+from initialize_frames.step import FrameInitializationResult, SkippedFrame
 from shstk_injector.entry_trampoline import EntryTrampoline
 from shstk_injector.expand import AddedSection
 from shstk_injector.return_trampoline import ReturnTrampoline
@@ -46,6 +47,32 @@ class CliOutputTests(unittest.TestCase):
         self.assertIn("skipped functions: 1", output.getvalue())
         self.assertIn(
             "  - tiny_fn @ 0x401020: function is smaller than a near jump",
+            output.getvalue(),
+        )
+
+    def test_initialize_frames_result_prints_skipped_function_details(self) -> None:
+        result = FrameInitializationResult(
+            output_path=Path("patched"),
+            initialized_frames=(),
+            skipped=(
+                SkippedFrame(
+                    "leaf_fn",
+                    0x401040,
+                    "function does not allocate a stack frame",
+                ),
+            ),
+            section_name=".init_frames",
+            section_address=0x600000,
+            section_size=0x1000,
+        )
+
+        output = StringIO()
+        with redirect_stdout(output):
+            _print_step_result(result)
+
+        self.assertIn("stack frames skipped: 1", output.getvalue())
+        self.assertIn(
+            "  - leaf_fn @ 0x401040: function does not allocate a stack frame",
             output.getvalue(),
         )
 

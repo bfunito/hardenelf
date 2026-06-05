@@ -283,6 +283,11 @@ def _print_step_result(
         print(f"{indent}initialized stack frames: {len(result.initialized_frames)}")
         if result.skipped:
             print(f"{indent}stack frames skipped: {len(result.skipped)}")
+            for skipped in result.skipped:
+                print(
+                    f"{indent}  - {skipped.function_name} "
+                    f"@ 0x{skipped.function_address:x}: {skipped.reason}"
+                )
         if result.section_address is not None:
             print(
                 f"{indent}{result.section_name}: "
