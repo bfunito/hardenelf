@@ -57,7 +57,7 @@ def inject_trampolines(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    shadow_size: int = 0x1000,
+    shadow_size: int | None = None,
     saved_addrs_size: int = 0x1000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,

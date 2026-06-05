@@ -3,7 +3,7 @@ from io import StringIO
 from pathlib import Path
 import unittest
 
-from binary_hardening.cli import _print_step_result
+from binary_hardening.cli import _parse_shadow_size, _print_step_result
 from initialize_frames.step import FrameInitializationResult, SkippedFrame
 from shstk_injector.entry_trampoline import EntryTrampoline
 from shstk_injector.expand import AddedSection
@@ -12,6 +12,12 @@ from shstk_injector.steps.shadow_stack import InjectionResult, SkippedFunction
 
 
 class CliOutputTests(unittest.TestCase):
+    def test_shadow_size_parser_accepts_auto(self) -> None:
+        self.assertIsNone(_parse_shadow_size("auto"))
+
+    def test_shadow_size_parser_accepts_integer(self) -> None:
+        self.assertEqual(_parse_shadow_size("0x2000"), 0x2000)
+
     def test_shadow_stack_result_prints_skipped_function_details(self) -> None:
         result = InjectionResult(
             output_path=Path("patched"),

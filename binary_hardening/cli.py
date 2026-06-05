@@ -102,11 +102,11 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--shadow-size",
-        type=_parse_int,
-        default=0x1000,
+        type=_parse_shadow_size,
+        default=None,
         help=(
-            "size of the executable .shadow section; accepts decimal or "
-            "0x-prefixed values"
+            "size of the executable .shadow section; use auto, decimal, or "
+            "0x-prefixed values; default: auto"
         ),
     )
     parser.add_argument(
@@ -189,6 +189,12 @@ def _parse_int(value: str) -> int:
     return parsed
 
 
+def _parse_shadow_size(value: str) -> int | None:
+    if value == "auto":
+        return None
+    return _parse_int(value)
+
+
 def _validate_shadow_stack_selection(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -199,7 +205,7 @@ def _validate_shadow_stack_selection(
 
     shadow_stack_options_requested = (
         args.expand_only
-        or args.shadow_size != 0x1000
+        or args.shadow_size is not None
         or args.saved_addrs_size != 0x1000
         or args.return_address_action != ReturnAddressAction.RESTORE.value
         or args.crash_message is not None
