@@ -184,19 +184,19 @@ def _make_parser() -> argparse.ArgumentParser:
         "-f",
         "--fmtstr",
         dest="fmtstr_trampoline_size",
-        type=_parse_int,
-        default=0x4000,
+        type=_parse_auto_size,
+        default=None,
         metavar="SIZE",
-        help=".fmtstr_tramp size: decimal or 0x-prefixed; default: 0x4000",
+        help=".fmtstr_tramp size: auto, decimal, or 0x-prefixed; default: auto",
     )
     trampolines.add_argument(
         "-i",
         "--frames",
         dest="init_frame_trampoline_size",
-        type=_parse_int,
-        default=0x4000,
+        type=_parse_auto_size,
+        default=None,
         metavar="SIZE",
-        help=".init_frames size: decimal or 0x-prefixed; default: 0x4000",
+        help=".init_frames size: auto, decimal, or 0x-prefixed; default: auto",
     )
 
     compatibility = parser.add_argument_group("compatibility")
@@ -215,13 +215,13 @@ def _make_parser() -> argparse.ArgumentParser:
     compatibility.add_argument(
         "--fmtstr-trampoline-size",
         dest="fmtstr_trampoline_size",
-        type=_parse_int,
+        type=_parse_auto_size,
         help=argparse.SUPPRESS,
     )
     compatibility.add_argument(
         "--init-frame-trampoline-size",
         dest="init_frame_trampoline_size",
-        type=_parse_int,
+        type=_parse_auto_size,
         help=argparse.SUPPRESS,
     )
     compatibility.add_argument(
@@ -274,10 +274,14 @@ def _parse_int(value: str) -> int:
     return parsed
 
 
-def _parse_shadow_size(value: str) -> int | None:
+def _parse_auto_size(value: str) -> int | None:
     if value == "auto":
         return None
     return _parse_int(value)
+
+
+def _parse_shadow_size(value: str) -> int | None:
+    return _parse_auto_size(value)
 
 
 def _color_enabled() -> bool:
@@ -334,7 +338,7 @@ def _validate_fmtstr_selection(
     if FMTSTR_CHECKER_STEP in selected_steps:
         return
 
-    if args.fmtstr_trampoline_size != 0x4000:
+    if args.fmtstr_trampoline_size is not None:
         parser.error(
             "--fmtstr-trampoline-size requires the fmtstr-checker pipeline step"
         )
@@ -348,7 +352,7 @@ def _validate_initialize_frames_selection(
     if INITIALIZE_FRAMES_STEP in selected_steps:
         return
 
-    if args.init_frame_trampoline_size != 0x4000:
+    if args.init_frame_trampoline_size is not None:
         parser.error(
             "--init-frame-trampoline-size requires the initialize-frames pipeline step"
         )

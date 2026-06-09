@@ -10,6 +10,7 @@ import lief
 
 
 ORIGIN_RUNPATH = "$ORIGIN"
+PAGE_SIZE = 0x1000
 
 
 def parse_elf(path: Path | str) -> lief.ELF.Binary:
@@ -77,6 +78,11 @@ def require_section(binary: lief.ELF.Binary, name: str) -> lief.ELF.Section:
 def validate_positive_size(name: str, size: int) -> None:
     if size <= 0:
         raise ValueError(f"{name} must be greater than zero")
+
+
+def round_up_to_page(size: int) -> int:
+    size = max(size, PAGE_SIZE)
+    return ((size + PAGE_SIZE - 1) // PAGE_SIZE) * PAGE_SIZE
 
 
 def ensure_origin_runpath(binary: lief.ELF.Binary) -> None:

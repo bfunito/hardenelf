@@ -103,7 +103,7 @@ def initialize_stack_frames(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    trampoline_size: int = 0x4000,
+    trampoline_size: int | None = None,
 ) -> FrameInitializationResult:
     """Zero stack-frame storage in canonical frame-pointer functions."""
 
@@ -118,7 +118,7 @@ def patch_format_strings(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    trampoline_size: int = 0x4000,
+    trampoline_size: int | None = None,
     library_name: str = "libcheckformat.so",
     source_path: Path | str | None = None,
 ) -> FmtStrPatchResult:

@@ -39,6 +39,11 @@ class InitializeFramesTests(unittest.TestCase):
         self.assertIsInstance(rewritten, lief.ELF.Binary)
         assert isinstance(rewritten, lief.ELF.Binary)
         self.assertTrue(rewritten.has_section(INIT_FRAMES_SECTION))
+        section = rewritten.get_section(INIT_FRAMES_SECTION)
+        self.assertIsNotNone(section)
+        assert section is not None
+        self.assertEqual(section.size % 0x1000, 0)
+        self.assertGreaterEqual(section.size, 0x1000)
 
     def test_patched_pie_binary_zeroes_stack_frame(self) -> None:
         input_path, output_path, _ = run_pipeline_fixture(

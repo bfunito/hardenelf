@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import lief
 
@@ -13,6 +14,7 @@ from binary_hardening.elf import (
     make_section,
     parse_elf,
     require_section,
+    round_up_to_page,
     validate_positive_size,
     write_elf,
 )
@@ -76,21 +78,37 @@ class FrameInitializationResult:
 
 
 @dataclass(frozen=True)
+class _PlannedFrameInitialization:
+    site: FrameInitializationSite
+    trampoline_address: int
+    body: bytes
+    patch_jump: bytes
+
+
+@dataclass(frozen=True)
+class _FrameInitializationPlan:
+    patches: tuple[_PlannedFrameInitialization, ...]
+    skipped: tuple[SkippedFrame, ...]
+    required_trampoline_size: int
+
+
+@dataclass(frozen=True)
 class InitializeFramesStepOptions:
     """Configuration for the stack-frame initialization step."""
 
-    trampoline_size: int = 0x4000
+    trampoline_size: int | None = None
 
 
 def initialize_stack_frames(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    trampoline_size: int = 0x4000,
+    trampoline_size: int | None = None,
 ) -> FrameInitializationResult:
     """Patch canonical frame-pointer functions to zero their local stack area."""
 
-    validate_positive_size("trampoline_size", trampoline_size)
+    if trampoline_size is not None:
+        validate_positive_size("trampoline_size", trampoline_size)
     input_file = Path(input_path)
     output_file = Path(output_path)
 
@@ -113,9 +131,15 @@ def initialize_stack_frames(
             section_size=0,
         )
 
+    resolved_trampoline_size = _resolve_trampoline_size(
+        input_file,
+        trampoline_size=trampoline_size,
+        disassembler=disassembler,
+        assembler=assembler,
+    )
     section = make_section(
         name=INIT_FRAMES_SECTION,
-        size=trampoline_size,
+        size=resolved_trampoline_size,
         flags=lief.ELF.Section.FLAGS.ALLOC | lief.ELF.Section.FLAGS.EXECINSTR,
         fill=0x90,
     )
@@ -128,7 +152,99 @@ def initialize_stack_frames(
     section = require_section(binary, INIT_FRAMES_SECTION)
     sites, skipped = _collect_sites(binary, disassembler)
 
+    plan = _build_frame_initialization_plan(
+        sites,
+        skipped=skipped,
+        assembler=assembler,
+        section=section,
+        enforce_trampoline_limit=True,
+    )
     initialized_frames: list[InitializedFrame] = []
+    for patch in plan.patches:
+        binary.patch_address(patch.trampoline_address, list(patch.body))
+        binary.patch_address(patch.site.patch_address, list(patch.patch_jump))
+        initialized_frames.append(
+            _initialized_frame_summary(patch.site, patch.trampoline_address)
+        )
+
+    if not initialized_frames:
+        raise ValueError("no stack-frame initializer trampolines were written")
+
+    write_elf(binary, output_file, mode_source=input_file)
+    rewritten = parse_elf(output_file)
+    section = require_section(rewritten, INIT_FRAMES_SECTION)
+
+    return FrameInitializationResult(
+        output_path=output_file,
+        initialized_frames=tuple(initialized_frames),
+        skipped=plan.skipped,
+        section_name=INIT_FRAMES_SECTION,
+        section_address=section.virtual_address,
+        section_size=section.size,
+    )
+
+
+def _resolve_trampoline_size(
+    input_file: Path,
+    *,
+    trampoline_size: int | None,
+    disassembler: object,
+    assembler: object,
+) -> int:
+    if trampoline_size is not None:
+        return trampoline_size
+
+    candidate_size = round_up_to_page(0)
+    seen_sizes: set[int] = set()
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for _ in range(8):
+            if candidate_size in seen_sizes:
+                raise ValueError("automatic .init_frames sizing did not converge")
+            seen_sizes.add(candidate_size)
+
+            output_file = tmpdir_path / f"init-frames-auto-{candidate_size:x}"
+            binary = parse_elf(input_file)
+            ensure_x86_64(binary)
+            ensure_section_absent(binary, INIT_FRAMES_SECTION)
+            section = make_section(
+                name=INIT_FRAMES_SECTION,
+                size=candidate_size,
+                flags=lief.ELF.Section.FLAGS.ALLOC | lief.ELF.Section.FLAGS.EXECINSTR,
+                fill=0x90,
+            )
+            binary.add(section, loaded=True)
+            write_elf(binary, output_file, mode_source=input_file)
+
+            binary = parse_elf(output_file)
+            ensure_x86_64(binary)
+            section = require_section(binary, INIT_FRAMES_SECTION)
+            sites, skipped = _collect_sites(binary, disassembler)
+            plan = _build_frame_initialization_plan(
+                sites,
+                skipped=skipped,
+                assembler=assembler,
+                section=section,
+                enforce_trampoline_limit=False,
+            )
+            needed_size = round_up_to_page(plan.required_trampoline_size)
+            if needed_size == candidate_size:
+                return needed_size
+            candidate_size = needed_size
+
+    raise ValueError("automatic .init_frames sizing did not converge")
+
+
+def _build_frame_initialization_plan(
+    sites: list[FrameInitializationSite],
+    *,
+    skipped: list[SkippedFrame],
+    assembler: object,
+    section: lief.ELF.Section,
+    enforce_trampoline_limit: bool,
+) -> _FrameInitializationPlan:
+    patches: list[_PlannedFrameInitialization] = []
+    remaining_skips = list(skipped)
     cursor = section.virtual_address
     end = section.virtual_address + section.size
 
@@ -141,8 +257,8 @@ def initialize_stack_frames(
             )
             body = pad_to_alignment(body)
             next_cursor = cursor + len(body)
-            if next_cursor > end:
-                skipped.append(
+            if enforce_trampoline_limit and next_cursor > end:
+                remaining_skips.append(
                     SkippedFrame(
                         site.function.name,
                         site.function.address,
@@ -151,29 +267,24 @@ def initialize_stack_frames(
                 )
                 continue
 
-            binary.patch_address(cursor, list(body))
-            binary.patch_address(site.patch_address, list(make_patch_jump(site, cursor)))
-            initialized_frames.append(_initialized_frame_summary(site, cursor))
+            patches.append(
+                _PlannedFrameInitialization(
+                    site=site,
+                    trampoline_address=cursor,
+                    body=body,
+                    patch_jump=make_patch_jump(site, cursor),
+                )
+            )
             cursor = next_cursor
         except SkipFunction as exc:
-            skipped.append(
+            remaining_skips.append(
                 SkippedFrame(site.function.name, site.function.address, str(exc))
             )
 
-    if not initialized_frames:
-        raise ValueError("no stack-frame initializer trampolines were written")
-
-    write_elf(binary, output_file, mode_source=input_file)
-    rewritten = parse_elf(output_file)
-    section = require_section(rewritten, INIT_FRAMES_SECTION)
-
-    return FrameInitializationResult(
-        output_path=output_file,
-        initialized_frames=tuple(initialized_frames),
-        skipped=tuple(skipped),
-        section_name=INIT_FRAMES_SECTION,
-        section_address=section.virtual_address,
-        section_size=section.size,
+    return _FrameInitializationPlan(
+        patches=tuple(patches),
+        skipped=tuple(remaining_skips),
+        required_trampoline_size=cursor - section.virtual_address,
     )
 
 

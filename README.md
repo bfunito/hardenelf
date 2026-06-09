@@ -105,15 +105,17 @@ Only expand the binary with the sections required by the `shadow-stack` step:
 hardenelf --expand ./input-binary ./expanded-binary
 ```
 
-By default, `.shadow` is sized automatically from the generated trampoline
-bodies and rounded up to a page boundary. You can still override section sizes
-with decimal or `0x`-prefixed values:
+By default, `.shadow`, `.fmtstr_tramp`, and `.init_frames` are sized
+automatically from the generated trampoline bodies and rounded up to a page
+boundary. You can still override section sizes with decimal or `0x`-prefixed
+values:
 
 ```bash
-hardenelf --shadow 0x2000 --saved 0x2000 ./input ./output
+hardenelf --shadow 0x2000 --saved 0x2000 --fmtstr 0x3000 --frames 0x3000 ./input ./output
 ```
 
-Use `--shadow auto` to request the default automatic behavior explicitly.
+Use `--shadow auto`, `--fmtstr auto`, or `--frames auto` to request the default
+automatic behavior explicitly.
 
 Run the tests:
 

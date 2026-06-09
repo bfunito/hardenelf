@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import lief
 
@@ -15,6 +16,7 @@ from binary_hardening.elf import (
     make_section,
     parse_elf,
     require_section,
+    round_up_to_page,
     validate_positive_size,
     write_elf,
 )
@@ -75,10 +77,25 @@ class FmtStrPatchResult:
 
 
 @dataclass(frozen=True)
+class _PlannedFormatPatch:
+    call: FormatCall
+    trampoline_address: int
+    trampoline_body: bytes
+    call_patch: bytes
+
+
+@dataclass(frozen=True)
+class _FormatPatchPlan:
+    patches: tuple[_PlannedFormatPatch, ...]
+    skipped_calls: tuple[SkippedFormatCall, ...]
+    required_trampoline_size: int
+
+
+@dataclass(frozen=True)
 class FmtStrCheckerStepOptions:
     """Configuration for the format-string checker step."""
 
-    trampoline_size: int = 0x4000
+    trampoline_size: int | None = None
     library_name: str = DEFAULT_CHECKFORMAT_LIBRARY_NAME
     source_path: Path | str | None = None
 
@@ -87,13 +104,14 @@ def patch_format_strings(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    trampoline_size: int = 0x4000,
+    trampoline_size: int | None = None,
     library_name: str = DEFAULT_CHECKFORMAT_LIBRARY_NAME,
     source_path: Path | str | None = None,
 ) -> FmtStrPatchResult:
     """Patch direct printf-like PLT calls to validate their format strings."""
 
-    validate_positive_size("trampoline_size", trampoline_size)
+    if trampoline_size is not None:
+        validate_positive_size("trampoline_size", trampoline_size)
     input_file = Path(input_path)
     output_file = Path(output_path)
 
@@ -120,6 +138,127 @@ def patch_format_strings(
     ensure_section_absent(binary, FMTSTR_TRAMPOLINE_SECTION)
     ensure_section_absent(binary, FMTSTR_DATA_SECTION)
 
+    resolved_trampoline_size = _resolve_trampoline_size(
+        input_file,
+        trampoline_size=trampoline_size,
+        library_name=library_name,
+        disassembler=disassembler,
+        assembler=assembler,
+    )
+
+    _prepare_format_binary(
+        binary,
+        trampoline_size=resolved_trampoline_size,
+        library_name=library_name,
+    )
+
+    write_elf(binary, output_file, mode_source=input_file)
+
+    binary = parse_elf(output_file)
+    ensure_x86_64(binary)
+    calls, skipped_calls = find_format_calls(binary, disassembler)
+    trampoline_section = require_section(binary, FMTSTR_TRAMPOLINE_SECTION)
+    data_section = require_section(binary, FMTSTR_DATA_SECTION)
+
+    plan = _build_format_patch_plan(
+        calls,
+        skipped_calls=skipped_calls,
+        assembler=assembler,
+        trampoline_section=trampoline_section,
+        data_section=data_section,
+        enforce_trampoline_limit=True,
+    )
+    patched_calls: list[PatchedFormatCall] = []
+    for patch in plan.patches:
+        binary.patch_address(patch.trampoline_address, list(patch.trampoline_body))
+        binary.patch_address(patch.call.call_address, list(patch.call_patch))
+        patched_calls.append(
+            _patched_call_summary(patch.call, patch.trampoline_address)
+        )
+
+    if not patched_calls:
+        raise ValueError("no format-string call trampolines were written")
+
+    write_elf(binary, output_file, mode_source=input_file)
+
+    library_path = build_checkformat_library(
+        output_file.parent,
+        library_name=library_name,
+        source_path=source_path,
+    )
+    rewritten = parse_elf(output_file)
+
+    return FmtStrPatchResult(
+        output_path=output_file,
+        library_name=library_name,
+        library_path=library_path,
+        patched_calls=tuple(patched_calls),
+        skipped_calls=plan.skipped_calls,
+        libraries=tuple(rewritten.libraries),
+        runpath=collect_runpath(rewritten),
+    )
+
+
+def _resolve_trampoline_size(
+    input_file: Path,
+    *,
+    trampoline_size: int | None,
+    library_name: str,
+    disassembler: object,
+    assembler: object,
+) -> int:
+    if trampoline_size is not None:
+        return trampoline_size
+
+    candidate_size = round_up_to_page(0)
+    seen_sizes: set[int] = set()
+    with TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        for _ in range(8):
+            if candidate_size in seen_sizes:
+                raise ValueError("automatic .fmtstr_tramp sizing did not converge")
+            seen_sizes.add(candidate_size)
+
+            output_file = tmpdir_path / f"fmtstr-auto-{candidate_size:x}"
+            binary = parse_elf(input_file)
+            ensure_x86_64(binary)
+            ensure_section_absent(binary, FMTSTR_TRAMPOLINE_SECTION)
+            ensure_section_absent(binary, FMTSTR_DATA_SECTION)
+            _prepare_format_binary(
+                binary,
+                trampoline_size=candidate_size,
+                library_name=library_name,
+            )
+            write_elf(binary, output_file, mode_source=input_file)
+
+            binary = parse_elf(output_file)
+            ensure_x86_64(binary)
+            calls, skipped_calls = find_format_calls(binary, disassembler)
+            plan = _build_format_patch_plan(
+                calls,
+                skipped_calls=skipped_calls,
+                assembler=assembler,
+                trampoline_section=require_section(
+                    binary,
+                    FMTSTR_TRAMPOLINE_SECTION,
+                ),
+                data_section=require_section(binary, FMTSTR_DATA_SECTION),
+                enforce_trampoline_limit=False,
+            )
+            needed_size = round_up_to_page(plan.required_trampoline_size)
+            if needed_size == candidate_size:
+                return needed_size
+            candidate_size = needed_size
+
+    raise ValueError("automatic .fmtstr_tramp sizing did not converge")
+
+
+def _prepare_format_binary(
+    binary: lief.ELF.Binary,
+    *,
+    trampoline_size: int,
+    library_name: str,
+) -> None:
     if not binary.has_library(library_name):
         binary.add_library(library_name)
     ensure_origin_runpath(binary)
@@ -144,17 +283,23 @@ def patch_format_strings(
     trampoline_section = require_section(binary, FMTSTR_TRAMPOLINE_SECTION)
     data_section = require_section(binary, FMTSTR_DATA_SECTION)
     check_format_symbol = _add_check_format_symbol(binary)
-    _add_check_format_relocation(binary, check_format_symbol, data_section.virtual_address)
+    _add_check_format_relocation(
+        binary,
+        check_format_symbol,
+        data_section.virtual_address,
+    )
 
-    write_elf(binary, output_file, mode_source=input_file)
 
-    binary = parse_elf(output_file)
-    ensure_x86_64(binary)
-    calls, skipped_calls = find_format_calls(binary, disassembler)
-    trampoline_section = require_section(binary, FMTSTR_TRAMPOLINE_SECTION)
-    data_section = require_section(binary, FMTSTR_DATA_SECTION)
-
-    patched_calls: list[PatchedFormatCall] = []
+def _build_format_patch_plan(
+    calls: tuple[FormatCall, ...],
+    *,
+    skipped_calls: tuple[SkippedFormatCall, ...],
+    assembler: object,
+    trampoline_section: lief.ELF.Section,
+    data_section: lief.ELF.Section,
+    enforce_trampoline_limit: bool,
+) -> _FormatPatchPlan:
+    patches: list[_PlannedFormatPatch] = []
     remaining_skips = list(skipped_calls)
     cursor = trampoline_section.virtual_address
     end = trampoline_section.virtual_address + trampoline_section.size
@@ -169,23 +314,27 @@ def patch_format_strings(
             )
             trampoline_body = pad_to_alignment(trampoline_body)
             next_cursor = cursor + len(trampoline_body)
-            if next_cursor > end:
+            if enforce_trampoline_limit and next_cursor > end:
                 remaining_skips.append(
                     SkippedFormatCall(
                         call.function_name,
                         call.call_address,
                         call.target_name,
-                        "not enough room left in .fmtstr_tramp",
+                        f"not enough room left in {FMTSTR_TRAMPOLINE_SECTION}",
                     )
                 )
                 continue
 
             call_patch = make_call(call.call_address, cursor)
             call_patch += b"\x90" * (call.instruction_size - len(call_patch))
-
-            binary.patch_address(cursor, list(trampoline_body))
-            binary.patch_address(call.call_address, list(call_patch))
-            patched_calls.append(_patched_call_summary(call, cursor))
+            patches.append(
+                _PlannedFormatPatch(
+                    call=call,
+                    trampoline_address=cursor,
+                    trampoline_body=trampoline_body,
+                    call_patch=call_patch,
+                )
+            )
             cursor = next_cursor
         except SkipFunction as exc:
             remaining_skips.append(
@@ -197,26 +346,10 @@ def patch_format_strings(
                 )
             )
 
-    if not patched_calls:
-        raise ValueError("no format-string call trampolines were written")
-
-    write_elf(binary, output_file, mode_source=input_file)
-
-    library_path = build_checkformat_library(
-        output_file.parent,
-        library_name=library_name,
-        source_path=source_path,
-    )
-    rewritten = parse_elf(output_file)
-
-    return FmtStrPatchResult(
-        output_path=output_file,
-        library_name=library_name,
-        library_path=library_path,
-        patched_calls=tuple(patched_calls),
+    return _FormatPatchPlan(
+        patches=tuple(patches),
         skipped_calls=tuple(remaining_skips),
-        libraries=tuple(rewritten.libraries),
-        runpath=collect_runpath(rewritten),
+        required_trampoline_size=cursor - trampoline_section.virtual_address,
     )
 
 

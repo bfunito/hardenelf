@@ -55,6 +55,11 @@ class FmtStrCheckerIntegrationTests(unittest.TestCase):
         assert isinstance(rewritten, lief.ELF.Binary)
         self.assertTrue(rewritten.has_section(FMTSTR_TRAMPOLINE_SECTION))
         self.assertTrue(rewritten.has_section(FMTSTR_DATA_SECTION))
+        trampoline_section = rewritten.get_section(FMTSTR_TRAMPOLINE_SECTION)
+        self.assertIsNotNone(trampoline_section)
+        assert trampoline_section is not None
+        self.assertEqual(trampoline_section.size % 0x1000, 0)
+        self.assertGreaterEqual(trampoline_section.size, 0x1000)
 
     def test_patched_binary_allows_benign_dynamic_formats(self) -> None:
         _, output_path, _ = run_pipeline_fixture(

@@ -94,6 +94,25 @@ class CliOutputTests(unittest.TestCase):
     def test_shadow_size_parser_accepts_integer(self) -> None:
         self.assertEqual(_parse_shadow_size("0x2000"), 0x2000)
 
+    def test_parser_accepts_auto_trampoline_sizes(self) -> None:
+        args = _make_parser().parse_args(
+            [
+                "-p",
+                "fmtstr-checker",
+                "-p",
+                "initialize-frames",
+                "-f",
+                "auto",
+                "-i",
+                "auto",
+                "input",
+                "output",
+            ]
+        )
+
+        self.assertIsNone(args.fmtstr_trampoline_size)
+        self.assertIsNone(args.init_frame_trampoline_size)
+
     def test_shadow_stack_result_prints_skipped_function_details(self) -> None:
         result = InjectionResult(
             output_path=Path("patched"),
