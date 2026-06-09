@@ -31,14 +31,14 @@ Rewrite an ELF binary with all implemented pipeline steps:
 hardenelf ./input-binary ./patched-binary
 ```
 
-Select a subset of the pipeline explicitly. Repeating `--step` preserves the
+Select a subset of the pipeline explicitly. Repeating `--pass` preserves the
 order you provide:
 
 ```bash
-hardenelf --step shadow-stack ./input-binary ./patched-binary
+hardenelf --pass shadow-stack ./input-binary ./patched-binary
 hardenelf \
-  --step fmtstr-checker \
-  --step rng-patcher \
+  --pass fmtstr-checker \
+  --pass rng-patcher \
   ./input-binary \
   ./patched-binary
 ```
@@ -54,13 +54,13 @@ live in their own step packages:
 Patch only the unsafe RNG imports:
 
 ```bash
-hardenelf --step rng-patcher ./input-binary ./patched-binary
+hardenelf --pass rng-patcher ./input-binary ./patched-binary
 ```
 
 Patch only stack-frame initialization:
 
 ```bash
-hardenelf --step initialize-frames ./input-binary ./patched-binary
+hardenelf --pass initialize-frames ./input-binary ./patched-binary
 ```
 
 The frame initializer currently targets x86-64 functions with the canonical
@@ -70,7 +70,7 @@ Functions without an allocated frame are reported as skipped.
 Patch only printf-like calls:
 
 ```bash
-hardenelf --step fmtstr-checker ./input-binary ./patched-binary
+hardenelf --pass fmtstr-checker ./input-binary ./patched-binary
 ```
 
 The format-string checker currently protects direct x86-64 PLT calls where the
@@ -83,26 +83,26 @@ restore the saved return address. To compare the saved and live return addresses
 and crash on mismatch instead:
 
 ```bash
-hardenelf --return-address-action compare-crash ./input-binary ./patched-binary
+hardenelf --ret compare-crash ./input-binary ./patched-binary
 ```
 
 Compare-and-crash mode can print a custom message to stderr before trapping:
 
 ```bash
 hardenelf \
-  --return-address-action compare-crash \
-  --crash-message "shadow stack mismatch" \
+  --ret compare-crash \
+  --message "shadow stack mismatch" \
   ./input-binary ./patched-binary
 ```
 
-If all jump-based return patch strategies fail, `--trap-fallback ask` prompts
+If all jump-based return patch strategies fail, `--trap ask` prompts
 before using the costly one-byte `int3`/`SIGTRAP` fallback. Use
-`--trap-fallback allow` or `--trap-fallback skip` for non-interactive runs.
+`--trap allow` or `--trap skip` for non-interactive runs.
 
 Only expand the binary with the sections required by the `shadow-stack` step:
 
 ```bash
-hardenelf --expand-only ./input-binary ./expanded-binary
+hardenelf --expand ./input-binary ./expanded-binary
 ```
 
 By default, `.shadow` is sized automatically from the generated trampoline
@@ -110,10 +110,10 @@ bodies and rounded up to a page boundary. You can still override section sizes
 with decimal or `0x`-prefixed values:
 
 ```bash
-hardenelf --shadow-size 0x2000 --saved-addrs-size 0x2000 ./input ./output
+hardenelf --shadow 0x2000 --saved 0x2000 ./input ./output
 ```
 
-Use `--shadow-size auto` to request the default automatic behavior explicitly.
+Use `--shadow auto` to request the default automatic behavior explicitly.
 
 Run the tests:
 
