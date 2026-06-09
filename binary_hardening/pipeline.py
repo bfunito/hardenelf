@@ -1,22 +1,15 @@
-"""Pipeline primitives for composing binary rewriting steps."""
+"""Small pipeline runner for binary rewriting functions."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Callable
 
 
-@runtime_checkable
-class PipelineStep(Protocol):
-    """A single binary-rewriting pass in the hardening pipeline."""
-
-    name: str
-    description: str
-
-    def run(self, input_path: Path | str, output_path: Path | str) -> object:
-        """Rewrite ``input_path`` into ``output_path``."""
+StepFunction = Callable[[Path | str, Path | str], object]
+PipelineStep = tuple[str, StepFunction]
 
 
 @dataclass(frozen=True)
@@ -24,7 +17,6 @@ class CompletedStep:
     """One pipeline step and its execution summary."""
 
     name: str
-    description: str
     result: object
 
 
@@ -50,11 +42,10 @@ def run_pipeline(
     *,
     steps: Sequence[PipelineStep],
 ) -> PipelineResult:
-    """Run the selected pipeline steps in the exact order provided.
+    """Run ``steps`` in order.
 
-    Each step writes to the same output path so later steps can keep patching the
-    already-rewritten binary. The original input path is only used for the first
-    step.
+    Each function writes to ``output_path``. Later functions read that same file
+    so they keep patching the already rewritten binary.
     """
 
     selected_steps = tuple(steps)
@@ -65,12 +56,11 @@ def run_pipeline(
     current_input = Path(input_path)
     completed: list[CompletedStep] = []
 
-    for step in selected_steps:
-        result = step.run(current_input, final_output)
+    for name, run_step in selected_steps:
+        result = run_step(current_input, final_output)
         completed.append(
             CompletedStep(
-                name=step.name,
-                description=step.description,
+                name=name,
                 result=result,
             )
         )
@@ -83,5 +73,6 @@ __all__ = [
     "CompletedStep",
     "PipelineResult",
     "PipelineStep",
+    "StepFunction",
     "run_pipeline",
 ]

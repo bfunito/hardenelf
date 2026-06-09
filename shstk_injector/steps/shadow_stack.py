@@ -3,38 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, ClassVar, Iterable
+from typing import Any
 
 import lief
 
-from shstk_injector.entry_trampoline import (
-    EntryTrampoline,
-    build_entry_trampoline,
-    collect_entry_instructions,
-)
-from shstk_injector.expand import (
-    SAVED_ADDRS_SECTION,
-    SHADOW_SECTION,
-    AddedSection,
-    ExpansionResult,
-    _require_section,
-    _section_summary,
-    expand_binary,
-)
-from shstk_injector.return_trampoline import (
-    ReturnAddressAction,
-    ReturnPatchStrategy,
-    ReturnSite,
-    ReturnTrampoline,
-    TrapFallbackCandidate,
-    build_donor_trampoline,
-    build_return_trampoline,
-    collect_return_sites,
-)
+from binary_hardening.elf import parse_elf, require_section
+from binary_hardening.symbols import FunctionSymbol, iter_function_symbols
 from binary_hardening.x86 import (
     NEAR_JUMP_SIZE,
     SkipFunction,
@@ -48,12 +26,37 @@ from binary_hardening.x86 import (
     pad_to_alignment,
     ranges_overlap,
 )
+from shstk_injector.entry_trampoline import (
+    EntryTrampoline,
+    build_entry_trampoline,
+    collect_entry_instructions,
+)
+from shstk_injector.expand import (
+    SAVED_ADDRS_SECTION,
+    SHADOW_SECTION,
+    AddedSection,
+    ExpansionResult,
+    expand_binary,
+    section_summary,
+)
+from shstk_injector.return_trampoline import (
+    ReturnAddressAction,
+    ReturnPatchStrategy,
+    ReturnSite,
+    ReturnTrampoline,
+    TrapFallbackCandidate,
+    build_donor_trampoline,
+    build_return_trampoline,
+    collect_return_sites,
+)
 
 
 SHADOW_STACK_CURSOR_SIZE = 8
 SHADOW_STACK_STEP = "shadow-stack"
+SHADOW_STACK_DESCRIPTION = (
+    "Add the shadow-stack sections and inject entry/return trampolines."
+)
 SHADOW_SIZE_PAGE = 0x1000
-_SKIPPED_ENTRY_SYMBOLS = frozenset({"_start"})
 _TRAP_INSTRUCTION = b"\xcc"
 
 
@@ -101,50 +104,6 @@ class ShadowStackStepOptions:
 
 
 @dataclass(frozen=True)
-class ShadowStackStep:
-    """Pipeline step that injects the current shadow-stack protection."""
-
-    options: ShadowStackStepOptions = field(default_factory=ShadowStackStepOptions)
-
-    name: ClassVar[str] = SHADOW_STACK_STEP
-    description: ClassVar[str] = (
-        "Add the shadow-stack sections and inject entry/return trampolines."
-    )
-
-    def run(
-        self,
-        input_path: Path | str,
-        output_path: Path | str,
-    ) -> ExpansionResult | InjectionResult:
-        if self.options.expand_only:
-            return expand_binary(
-                input_path,
-                output_path,
-                shadow_size=_manual_or_default_shadow_size(self.options.shadow_size),
-                saved_addrs_size=self.options.saved_addrs_size,
-            )
-
-        return inject_shadow_stack(
-            input_path,
-            output_path,
-            shadow_size=self.options.shadow_size,
-            saved_addrs_size=self.options.saved_addrs_size,
-            return_address_action=self.options.return_address_action,
-            crash_message=self.options.crash_message,
-            trap_fallback=self.options.trap_fallback,
-            trap_fallback_callback=self.options.trap_fallback_callback,
-        )
-
-
-@dataclass(frozen=True)
-class _FunctionSymbol:
-    name: str
-    address: int
-    size: int
-    section: lief.ELF.Section
-
-
-@dataclass(frozen=True)
 class _ReturnBody:
     site: ReturnSite
     trampoline_address: int
@@ -161,7 +120,7 @@ class _TrapEntry:
 
 @dataclass(frozen=True)
 class _PlannedFunctionPatch:
-    function: _FunctionSymbol
+    function: FunctionSymbol
     entry_body_address: int
     entry_instructions: list[Any]
     entry_body: bytes
@@ -173,7 +132,6 @@ class _PlannedFunctionPatch:
 class _ShadowStackPlan:
     patches: tuple[_PlannedFunctionPatch, ...]
     skipped: tuple[SkippedFunction, ...]
-    trap_entries: tuple[_TrapEntry, ...]
     trap_installer_address: int | None
     trap_installer_body: bytes | None
     required_shadow_size: int
@@ -219,14 +177,12 @@ def inject_shadow_stack(
     )
     output_file = expanded.output_path
 
-    binary = lief.parse(output_file)
-    if binary is None or not isinstance(binary, lief.ELF.Binary):
-        raise ValueError(f"LIEF could not parse expanded binary {output_file}")
+    binary = parse_elf(output_file)
     ensure_x86_64(binary)
     is_pie = is_pie_binary(binary)
 
-    shadow = _require_section(binary, SHADOW_SECTION)
-    saved_addrs = _require_section(binary, SAVED_ADDRS_SECTION)
+    shadow = require_section(binary, SHADOW_SECTION)
+    saved_addrs = require_section(binary, SAVED_ADDRS_SECTION)
     if saved_addrs.size <= SHADOW_STACK_CURSOR_SIZE:
         raise ValueError(".saved_addrs must be larger than eight bytes")
 
@@ -242,7 +198,6 @@ def inject_shadow_stack(
     )
     trampolines: list[EntryTrampoline] = []
     return_trampolines: list[ReturnTrampoline] = []
-    trap_entries: list[_TrapEntry] = []
 
     for patch in plan.patches:
         _patch_entry(
@@ -259,7 +214,6 @@ def inject_shadow_stack(
             patch.function,
             patch.return_bodies,
             return_trampolines,
-            trap_entries,
         )
 
     if not trampolines:
@@ -275,18 +229,45 @@ def inject_shadow_stack(
         binary.header.entrypoint = plan.trap_installer_address
 
     binary.write(output_file)
-    rewritten = lief.parse(output_file)
-    if rewritten is None or not isinstance(rewritten, lief.ELF.Binary):
-        raise ValueError(f"LIEF wrote {output_file}, but could not parse it back")
+    rewritten = parse_elf(output_file)
 
     return InjectionResult(
         output_path=output_file,
-        shadow=_section_summary(_require_section(rewritten, SHADOW_SECTION)),
-        saved_addrs=_section_summary(_require_section(rewritten, SAVED_ADDRS_SECTION)),
+        shadow=section_summary(require_section(rewritten, SHADOW_SECTION)),
+        saved_addrs=section_summary(require_section(rewritten, SAVED_ADDRS_SECTION)),
         trampolines=tuple(trampolines),
         skipped=plan.skipped,
         return_trampolines=tuple(return_trampolines),
         is_pie=is_pie,
+    )
+
+
+def run_shadow_stack_step(
+    input_path: Path | str,
+    output_path: Path | str,
+    *,
+    options: ShadowStackStepOptions | None = None,
+) -> ExpansionResult | InjectionResult:
+    """Run the shadow-stack pass with CLI/pipeline options."""
+
+    selected_options = options or ShadowStackStepOptions()
+    if selected_options.expand_only:
+        return expand_binary(
+            input_path,
+            output_path,
+            shadow_size=_manual_or_default_shadow_size(selected_options.shadow_size),
+            saved_addrs_size=selected_options.saved_addrs_size,
+        )
+
+    return inject_shadow_stack(
+        input_path,
+        output_path,
+        shadow_size=selected_options.shadow_size,
+        saved_addrs_size=selected_options.saved_addrs_size,
+        return_address_action=selected_options.return_address_action,
+        crash_message=selected_options.crash_message,
+        trap_fallback=selected_options.trap_fallback,
+        trap_fallback_callback=selected_options.trap_fallback_callback,
     )
 
 
@@ -321,14 +302,10 @@ def _resolve_shadow_size(
                 shadow_size=candidate_size,
                 saved_addrs_size=saved_addrs_size,
             )
-            binary = lief.parse(expanded_path)
-            if binary is None or not isinstance(binary, lief.ELF.Binary):
-                raise ValueError(
-                    f"LIEF could not parse expanded binary {expanded_path}"
-                )
+            binary = parse_elf(expanded_path)
             ensure_x86_64(binary)
 
-            saved_addrs = _require_section(binary, SAVED_ADDRS_SECTION)
+            saved_addrs = require_section(binary, SAVED_ADDRS_SECTION)
             if saved_addrs.size <= SHADOW_STACK_CURSOR_SIZE:
                 raise ValueError(".saved_addrs must be larger than eight bytes")
 
@@ -363,15 +340,15 @@ def _build_shadow_stack_plan(
 ) -> _ShadowStackPlan:
     is_pie = is_pie_binary(binary)
     allow_absolute_saved_addrs = not is_pie
-    shadow = _require_section(binary, SHADOW_SECTION)
-    saved_addrs = _require_section(binary, SAVED_ADDRS_SECTION)
+    shadow = require_section(binary, SHADOW_SECTION)
+    saved_addrs = require_section(binary, SAVED_ADDRS_SECTION)
     shadow_cursor = shadow.virtual_address
     shadow_end = shadow.virtual_address + shadow.size
     patches: list[_PlannedFunctionPatch] = []
     trap_entries: list[_TrapEntry] = []
     skipped: list[SkippedFunction] = []
 
-    for function in _iter_function_symbols(binary):
+    for function in iter_function_symbols(binary):
         try:
             entry_instructions = collect_entry_instructions(
                 binary,
@@ -417,7 +394,6 @@ def _build_shadow_stack_plan(
                 return_sites=return_sites,
             )
             return_bodies: list[_ReturnBody] = []
-            function_trap_entries: list[_TrapEntry] = []
             next_shadow_cursor = entry_body_address + len(entry_body)
 
             for return_site in return_sites:
@@ -444,6 +420,7 @@ def _build_shadow_stack_plan(
                     allow_absolute_saved_addrs=allow_absolute_saved_addrs,
                 )
                 return_body = pad_to_alignment(return_body)
+                next_shadow_cursor += len(return_body)
                 return_bodies.append(
                     _ReturnBody(
                         site=return_site,
@@ -453,15 +430,6 @@ def _build_shadow_stack_plan(
                         donor_body=donor_body,
                     )
                 )
-                if return_site.strategy is ReturnPatchStrategy.TRAP:
-                    function_trap_entries.append(
-                        _TrapEntry(
-                            trapped_rip=return_site.patch_address
-                            + len(_TRAP_INSTRUCTION),
-                            trampoline_address=return_body_address,
-                        )
-                    )
-                next_shadow_cursor += len(return_body)
 
             if enforce_shadow_limit and next_shadow_cursor > shadow_end:
                 skipped.append(
@@ -483,7 +451,14 @@ def _build_shadow_stack_plan(
                     return_bodies=return_bodies,
                 )
             )
-            trap_entries.extend(function_trap_entries)
+            trap_entries.extend(
+                _TrapEntry(
+                    trapped_rip=return_body.site.patch_address + len(_TRAP_INSTRUCTION),
+                    trampoline_address=return_body.trampoline_address,
+                )
+                for return_body in return_bodies
+                if return_body.site.strategy is ReturnPatchStrategy.TRAP
+            )
             shadow_cursor = next_shadow_cursor
         except SkipFunction as exc:
             skipped.append(SkippedFunction(function.name, function.address, str(exc)))
@@ -506,7 +481,6 @@ def _build_shadow_stack_plan(
     return _ShadowStackPlan(
         patches=tuple(patches),
         skipped=tuple(skipped),
-        trap_entries=tuple(trap_entries),
         trap_installer_address=trap_installer_address,
         trap_installer_body=trap_installer_body,
         required_shadow_size=shadow_cursor - shadow.virtual_address,
@@ -579,7 +553,7 @@ def _memoize_trap_fallback_callback(
 def _allow_trap_fallback(
     decision: TrapFallbackDecision,
     callback: Callable[[str, int, str], bool] | None,
-    function: _FunctionSymbol,
+    function: FunctionSymbol,
     reason: str,
 ) -> bool:
     if decision is TrapFallbackDecision.ALLOW:
@@ -598,37 +572,6 @@ def _trap_fallback_skip_reason(
     if decision is TrapFallbackDecision.SKIP:
         return f"trap fallback disabled after jump strategies failed: {reason}"
     return f"trap fallback declined after jump strategies failed: {reason}"
-
-
-def _iter_function_symbols(binary: lief.ELF.Binary) -> Iterable[_FunctionSymbol]:
-    seen_addresses: set[int] = set()
-    functions: list[_FunctionSymbol] = []
-
-    for symbol in binary.symtab_symbols:
-        if symbol.type != lief.ELF.Symbol.TYPE.FUNC:
-            continue
-        if symbol.value == 0 or symbol.name in _SKIPPED_ENTRY_SYMBOLS:
-            continue
-        if symbol.value in seen_addresses:
-            continue
-
-        section = binary.section_from_virtual_address(symbol.value)
-        if section is None or not section.has(lief.ELF.Section.FLAGS.EXECINSTR):
-            continue
-        if section.name.startswith(".plt"):
-            continue
-
-        seen_addresses.add(symbol.value)
-        functions.append(
-            _FunctionSymbol(
-                name=symbol.name or f"sub_{symbol.value:x}",
-                address=symbol.value,
-                size=symbol.size,
-                section=section,
-            )
-        )
-
-    return sorted(functions, key=lambda function: function.address)
 
 
 def _ensure_patch_ranges_do_not_overlap(
@@ -691,7 +634,7 @@ def _rbx_jump_target(
 
 def _patch_entry(
     binary: lief.ELF.Binary,
-    function: _FunctionSymbol,
+    function: FunctionSymbol,
     trampoline_address: int,
     body: bytes,
     instructions: list[Any],
@@ -719,10 +662,9 @@ def _patch_entry(
 
 def _patch_returns(
     binary: lief.ELF.Binary,
-    function: _FunctionSymbol,
+    function: FunctionSymbol,
     return_bodies: list[_ReturnBody],
     return_trampolines: list[ReturnTrampoline],
-    trap_entries: list[_TrapEntry],
 ) -> None:
     for return_body in return_bodies:
         return_site = return_body.site
@@ -731,12 +673,6 @@ def _patch_returns(
             return_patch = b"\xff\xe3"
         elif return_site.strategy is ReturnPatchStrategy.TRAP:
             return_patch = _TRAP_INSTRUCTION
-            trap_entries.append(
-                _TrapEntry(
-                    trapped_rip=return_site.patch_address + len(_TRAP_INSTRUCTION),
-                    trampoline_address=return_trampoline_address,
-                )
-            )
         elif return_site.strategy in (
             ReturnPatchStrategy.SHORT_CAVE,
             ReturnPatchStrategy.SHORT_DONOR,
@@ -880,10 +816,11 @@ def _build_trap_installer(
 
 __all__ = [
     "InjectionResult",
+    "SHADOW_STACK_DESCRIPTION",
     "SHADOW_STACK_STEP",
-    "ShadowStackStep",
     "ShadowStackStepOptions",
     "SkippedFunction",
     "TrapFallbackDecision",
     "inject_shadow_stack",
+    "run_shadow_stack_step",
 ]

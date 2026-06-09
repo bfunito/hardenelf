@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import lief
 
+from binary_hardening.symbols import FunctionSymbol, iter_function_symbols
 from binary_hardening.x86 import (
     NEAR_JUMP_SIZE,
     SkipFunction,
@@ -14,19 +15,6 @@ from binary_hardening.x86 import (
     function_code_limit,
     ranges_overlap,
 )
-
-
-_SKIPPED_SYMBOLS = frozenset({"_start"})
-
-
-@dataclass(frozen=True)
-class FunctionSymbol:
-    """A local function symbol that can be considered for patching."""
-
-    name: str
-    address: int
-    size: int
-    section: lief.ELF.Section
 
 
 @dataclass(frozen=True)
@@ -47,40 +35,6 @@ class FrameInitializationSite:
         return b"".join(
             bytes(instruction.bytes) for instruction in self.overwritten_instructions
         )
-
-
-def iter_function_symbols(binary: lief.ELF.Binary) -> Iterable[FunctionSymbol]:
-    """Yield unique non-PLT function symbols in address order."""
-
-    seen_addresses: set[int] = set()
-    functions: list[FunctionSymbol] = []
-
-    for symbol in binary.symtab_symbols:
-        if symbol.type != lief.ELF.Symbol.TYPE.FUNC:
-            continue
-        if symbol.value == 0 or symbol.name in _SKIPPED_SYMBOLS:
-            continue
-        if symbol.value in seen_addresses:
-            continue
-
-        section = binary.section_from_virtual_address(symbol.value)
-        if section is None or not section.has(lief.ELF.Section.FLAGS.EXECINSTR):
-            continue
-        if section.name.startswith(".plt"):
-            continue
-
-        seen_addresses.add(symbol.value)
-        functions.append(
-            FunctionSymbol(
-                name=symbol.name or f"sub_{symbol.value:x}",
-                address=symbol.value,
-                size=symbol.size,
-                section=section,
-            )
-        )
-
-    return sorted(functions, key=lambda function: function.address)
-
 
 def collect_initialization_site(
     binary: lief.ELF.Binary,

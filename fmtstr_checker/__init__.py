@@ -1,8 +1,8 @@
 """Format-string checker pipeline step."""
 
 from fmtstr_checker.step import (
+    FMTSTR_CHECKER_DESCRIPTION,
     FMTSTR_CHECKER_STEP,
-    FmtStrCheckerStep,
     FmtStrCheckerStepOptions,
     FmtStrPatchResult,
     PatchedFormatCall,
@@ -11,8 +11,8 @@ from fmtstr_checker.step import (
 )
 
 __all__ = [
+    "FMTSTR_CHECKER_DESCRIPTION",
     "FMTSTR_CHECKER_STEP",
-    "FmtStrCheckerStep",
     "FmtStrCheckerStepOptions",
     "FmtStrPatchResult",
     "PatchedFormatCall",

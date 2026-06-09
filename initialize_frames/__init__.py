@@ -1,10 +1,10 @@
 """Stack-frame initialization pipeline step."""
 
 from .step import (
+    INITIALIZE_FRAMES_DESCRIPTION,
     INITIALIZE_FRAMES_STEP,
     INIT_FRAMES_SECTION,
     FrameInitializationResult,
-    InitializeFramesStep,
     InitializeFramesStepOptions,
     InitializedFrame,
     SkippedFrame,
@@ -12,10 +12,10 @@ from .step import (
 )
 
 __all__ = [
+    "INITIALIZE_FRAMES_DESCRIPTION",
     "INITIALIZE_FRAMES_STEP",
     "INIT_FRAMES_SECTION",
     "FrameInitializationResult",
-    "InitializeFramesStep",
     "InitializeFramesStepOptions",
     "InitializedFrame",
     "SkippedFrame",

@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
-import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from stat import S_IMODE
-from typing import ClassVar
 
 import lief
 
+from binary_hardening.elf import (
+    collect_runpath,
+    copy_if_needed,
+    ensure_origin_runpath,
+    ensure_section_absent,
+    make_section,
+    parse_elf,
+    require_section,
+    validate_positive_size,
+    write_elf,
+)
+from binary_hardening.x86 import (
+    SkipFunction,
+    ensure_x86_64,
+    make_assembler,
+    make_disassembler,
+    pad_to_alignment,
+)
 from fmtstr_checker.analysis import (
     FormatCall,
     SkippedFormatCall,
@@ -23,19 +38,14 @@ from fmtstr_checker.trampoline import (
     build_format_trampoline,
     make_call,
 )
-from binary_hardening.x86 import (
-    SkipFunction,
-    ensure_x86_64,
-    make_assembler,
-    make_disassembler,
-    pad_to_alignment,
-)
 
 
 FMTSTR_CHECKER_STEP = "fmtstr-checker"
+FMTSTR_CHECKER_DESCRIPTION = (
+    "Inject runtime format-string argument checks before printf-like calls."
+)
 FMTSTR_TRAMPOLINE_SECTION = ".fmtstr_tramp"
 FMTSTR_DATA_SECTION = ".fmtstr_data"
-_ORIGIN_RUNPATH = "$ORIGIN"
 _CHECK_FORMAT_SYMBOL = "check_format"
 
 
@@ -73,27 +83,6 @@ class FmtStrCheckerStepOptions:
     source_path: Path | str | None = None
 
 
-@dataclass(frozen=True)
-class FmtStrCheckerStep:
-    """Pipeline step that checks printf-like calls before libc sees them."""
-
-    options: FmtStrCheckerStepOptions = field(default_factory=FmtStrCheckerStepOptions)
-
-    name: ClassVar[str] = FMTSTR_CHECKER_STEP
-    description: ClassVar[str] = (
-        "Inject runtime format-string argument checks before printf-like calls."
-    )
-
-    def run(self, input_path: Path | str, output_path: Path | str) -> FmtStrPatchResult:
-        return patch_format_strings(
-            input_path,
-            output_path,
-            trampoline_size=self.options.trampoline_size,
-            library_name=self.options.library_name,
-            source_path=self.options.source_path,
-        )
-
-
 def patch_format_strings(
     input_path: Path | str,
     output_path: Path | str,
@@ -104,15 +93,11 @@ def patch_format_strings(
 ) -> FmtStrPatchResult:
     """Patch direct printf-like PLT calls to validate their format strings."""
 
-    _validate_size("trampoline_size", trampoline_size)
+    validate_positive_size("trampoline_size", trampoline_size)
     input_file = Path(input_path)
     output_file = Path(output_path)
 
-    binary = lief.parse(input_file)
-    if binary is None:
-        raise ValueError(f"LIEF could not parse {input_file}")
-    if not isinstance(binary, lief.ELF.Binary):
-        raise ValueError(f"{input_file} is not an ELF binary")
+    binary = parse_elf(input_file)
     ensure_x86_64(binary)
 
     disassembler = make_disassembler()
@@ -120,8 +105,8 @@ def patch_format_strings(
     calls, skipped_calls = find_format_calls(binary, disassembler)
 
     if not calls:
-        _copy_if_needed(input_file, output_file)
-        rewritten = _parse_output(output_file)
+        copy_if_needed(input_file, output_file)
+        rewritten = parse_elf(output_file)
         return FmtStrPatchResult(
             output_path=output_file,
             library_name=library_name,
@@ -129,24 +114,24 @@ def patch_format_strings(
             patched_calls=(),
             skipped_calls=skipped_calls,
             libraries=tuple(rewritten.libraries),
-            runpath=_collect_runpath(rewritten),
+            runpath=collect_runpath(rewritten),
         )
 
-    _ensure_section_absent(binary, FMTSTR_TRAMPOLINE_SECTION)
-    _ensure_section_absent(binary, FMTSTR_DATA_SECTION)
+    ensure_section_absent(binary, FMTSTR_TRAMPOLINE_SECTION)
+    ensure_section_absent(binary, FMTSTR_DATA_SECTION)
 
     if not binary.has_library(library_name):
         binary.add_library(library_name)
-    _ensure_origin_runpath(binary)
+    ensure_origin_runpath(binary)
 
-    trampoline_section = _make_section(
+    trampoline_section = make_section(
         name=FMTSTR_TRAMPOLINE_SECTION,
         size=trampoline_size,
         flags=lief.ELF.Section.FLAGS.ALLOC | lief.ELF.Section.FLAGS.EXECINSTR,
         fill=0x90,
         alignment=0x10,
     )
-    data_section = _make_section(
+    data_section = make_section(
         name=FMTSTR_DATA_SECTION,
         size=8,
         flags=lief.ELF.Section.FLAGS.ALLOC | lief.ELF.Section.FLAGS.WRITE,
@@ -156,20 +141,18 @@ def patch_format_strings(
     binary.add(trampoline_section, loaded=True)
     binary.add(data_section, loaded=True)
 
-    trampoline_section = _require_section(binary, FMTSTR_TRAMPOLINE_SECTION)
-    data_section = _require_section(binary, FMTSTR_DATA_SECTION)
+    trampoline_section = require_section(binary, FMTSTR_TRAMPOLINE_SECTION)
+    data_section = require_section(binary, FMTSTR_DATA_SECTION)
     check_format_symbol = _add_check_format_symbol(binary)
     _add_check_format_relocation(binary, check_format_symbol, data_section.virtual_address)
 
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    binary.write(output_file)
-    output_file.chmod(S_IMODE(input_file.stat().st_mode))
+    write_elf(binary, output_file, mode_source=input_file)
 
-    binary = _parse_output(output_file)
+    binary = parse_elf(output_file)
     ensure_x86_64(binary)
     calls, skipped_calls = find_format_calls(binary, disassembler)
-    trampoline_section = _require_section(binary, FMTSTR_TRAMPOLINE_SECTION)
-    data_section = _require_section(binary, FMTSTR_DATA_SECTION)
+    trampoline_section = require_section(binary, FMTSTR_TRAMPOLINE_SECTION)
+    data_section = require_section(binary, FMTSTR_DATA_SECTION)
 
     patched_calls: list[PatchedFormatCall] = []
     remaining_skips = list(skipped_calls)
@@ -217,15 +200,14 @@ def patch_format_strings(
     if not patched_calls:
         raise ValueError("no format-string call trampolines were written")
 
-    binary.write(output_file)
-    output_file.chmod(S_IMODE(input_file.stat().st_mode))
+    write_elf(binary, output_file, mode_source=input_file)
 
     library_path = build_checkformat_library(
         output_file.parent,
         library_name=library_name,
         source_path=source_path,
     )
-    rewritten = _parse_output(output_file)
+    rewritten = parse_elf(output_file)
 
     return FmtStrPatchResult(
         output_path=output_file,
@@ -234,7 +216,7 @@ def patch_format_strings(
         patched_calls=tuple(patched_calls),
         skipped_calls=tuple(remaining_skips),
         libraries=tuple(rewritten.libraries),
-        runpath=_collect_runpath(rewritten),
+        runpath=collect_runpath(rewritten),
     )
 
 
@@ -278,74 +260,11 @@ def _add_check_format_relocation(
     binary.add_dynamic_relocation(relocation)
 
 
-def _make_section(
-    *,
-    name: str,
-    size: int,
-    flags: lief.ELF.Section.FLAGS,
-    fill: int,
-    alignment: int,
-) -> lief.ELF.Section:
-    section = lief.ELF.Section(name)
-    section.type = lief.ELF.Section.TYPE.PROGBITS
-    section.flags = flags
-    section.alignment = alignment
-    section.content = [fill] * size
-    return section
-
-
-def _ensure_origin_runpath(binary: lief.ELF.Binary) -> None:
-    for entry in binary.dynamic_entries:
-        if isinstance(entry, lief.ELF.DynamicEntryRunPath):
-            if _ORIGIN_RUNPATH not in entry.paths:
-                entry.append(_ORIGIN_RUNPATH)
-            return
-    binary.add(lief.ELF.DynamicEntryRunPath(_ORIGIN_RUNPATH))
-
-
-def _collect_runpath(binary: lief.ELF.Binary) -> tuple[str, ...]:
-    for entry in binary.dynamic_entries:
-        if isinstance(entry, lief.ELF.DynamicEntryRunPath):
-            return tuple(entry.paths)
-    return ()
-
-
-def _copy_if_needed(input_file: Path, output_file: Path) -> None:
-    if input_file == output_file:
-        return
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(input_file, output_file)
-
-
-def _parse_output(output_file: Path) -> lief.ELF.Binary:
-    rewritten = lief.parse(output_file)
-    if rewritten is None or not isinstance(rewritten, lief.ELF.Binary):
-        raise ValueError(f"LIEF could not parse {output_file}")
-    return rewritten
-
-
-def _ensure_section_absent(binary: lief.ELF.Binary, name: str) -> None:
-    if binary.has_section(name):
-        raise ValueError(f"{name} already exists in the input binary")
-
-
-def _require_section(binary: lief.ELF.Binary, name: str) -> lief.ELF.Section:
-    section = binary.get_section(name)
-    if section is None:
-        raise ValueError(f"{name} was not found in the rewritten binary")
-    return section
-
-
-def _validate_size(name: str, size: int) -> None:
-    if size <= 0:
-        raise ValueError(f"{name} must be greater than zero")
-
-
 __all__ = [
+    "FMTSTR_CHECKER_DESCRIPTION",
     "FMTSTR_CHECKER_STEP",
     "FMTSTR_DATA_SECTION",
     "FMTSTR_TRAMPOLINE_SECTION",
-    "FmtStrCheckerStep",
     "FmtStrCheckerStepOptions",
     "FmtStrPatchResult",
     "PatchedFormatCall",

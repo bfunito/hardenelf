@@ -1,134 +1,129 @@
-"""Central registry for binary hardening pipeline steps."""
+"""Step names, default order, and option binding for the hardening pipeline."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from pathlib import Path
 
 from fmtstr_checker.step import (
+    FMTSTR_CHECKER_DESCRIPTION,
     FMTSTR_CHECKER_STEP,
-    FmtStrCheckerStep,
     FmtStrCheckerStepOptions,
+    patch_format_strings,
 )
 from initialize_frames.step import (
+    INITIALIZE_FRAMES_DESCRIPTION,
     INITIALIZE_FRAMES_STEP,
-    InitializeFramesStep,
     InitializeFramesStepOptions,
+    initialize_stack_frames,
 )
 from safe_rng.step import (
+    RNG_PATCHER_DESCRIPTION,
     RNG_PATCHER_STEP,
-    RngPatcherStep,
     RngPatcherStepOptions,
+    patch_rng_imports,
 )
 from shstk_injector.steps.shadow_stack import (
+    SHADOW_STACK_DESCRIPTION,
     SHADOW_STACK_STEP,
-    ShadowStackStep,
     ShadowStackStepOptions,
+    run_shadow_stack_step,
 )
 
-from .pipeline import PipelineStep
+from .pipeline import PipelineStep, StepFunction
 
 
-@dataclass(frozen=True)
-class PipelineOptions:
-    """Configuration for all registered pipeline steps."""
-
-    shadow_stack: ShadowStackStepOptions = field(default_factory=ShadowStackStepOptions)
-    initialize_frames: InitializeFramesStepOptions = field(
-        default_factory=InitializeFramesStepOptions
-    )
-    rng_patcher: RngPatcherStepOptions = field(default_factory=RngPatcherStepOptions)
-    fmtstr_checker: FmtStrCheckerStepOptions = field(
-        default_factory=FmtStrCheckerStepOptions
-    )
-
-
-@dataclass(frozen=True)
-class StepDefinition:
-    """Static metadata and factory for one pipeline step."""
-
-    name: str
-    description: str
-    build: Callable[[PipelineOptions], PipelineStep]
-
-
-_STEP_DEFINITIONS = (
-    StepDefinition(
-        name=INITIALIZE_FRAMES_STEP,
-        description=InitializeFramesStep.description,
-        build=lambda options: InitializeFramesStep(options.initialize_frames),
-    ),
-    StepDefinition(
-        name=SHADOW_STACK_STEP,
-        description=ShadowStackStep.description,
-        build=lambda options: ShadowStackStep(options.shadow_stack),
-    ),
-    StepDefinition(
-        name=RNG_PATCHER_STEP,
-        description=RngPatcherStep.description,
-        build=lambda options: RngPatcherStep(options.rng_patcher),
-    ),
-    StepDefinition(
-        name=FMTSTR_CHECKER_STEP,
-        description=FmtStrCheckerStep.description,
-        build=lambda options: FmtStrCheckerStep(options.fmtstr_checker),
-    ),
+_STEPS = (
+    (INITIALIZE_FRAMES_STEP, INITIALIZE_FRAMES_DESCRIPTION),
+    (SHADOW_STACK_STEP, SHADOW_STACK_DESCRIPTION),
+    (RNG_PATCHER_STEP, RNG_PATCHER_DESCRIPTION),
+    (FMTSTR_CHECKER_STEP, FMTSTR_CHECKER_DESCRIPTION),
 )
-_STEP_DEFINITIONS_BY_NAME = {definition.name: definition for definition in _STEP_DEFINITIONS}
+_STEP_DESCRIPTIONS = dict(_STEPS)
+_STEP_NAMES = tuple(name for name, _ in _STEPS)
 
 
-def available_steps() -> tuple[StepDefinition, ...]:
-    """Return the implemented steps in default pipeline order."""
+def available_steps() -> tuple[tuple[str, str], ...]:
+    """Return ``(name, description)`` pairs in default pipeline order."""
 
-    return _STEP_DEFINITIONS
+    return _STEPS
 
 
 def available_step_names() -> tuple[str, ...]:
-    """Return the implemented step names in default pipeline order."""
+    """Return implemented step names in default pipeline order."""
 
-    return tuple(step.name for step in _STEP_DEFINITIONS)
+    return _STEP_NAMES
 
 
 def build_steps(
     step_names: Sequence[str] | None = None,
     *,
-    options: PipelineOptions | None = None,
     shadow_stack_options: ShadowStackStepOptions | None = None,
     initialize_frames_options: InitializeFramesStepOptions | None = None,
     rng_patcher_options: RngPatcherStepOptions | None = None,
     fmtstr_checker_options: FmtStrCheckerStepOptions | None = None,
 ) -> tuple[PipelineStep, ...]:
-    """Instantiate ``step_names`` in the exact order requested."""
+    """Bind selected step names to concrete runner functions."""
 
-    normalized_names = _normalize_step_names(step_names)
-    configured_options = _merge_options(
-        options,
-        shadow_stack_options=shadow_stack_options,
-        initialize_frames_options=initialize_frames_options,
-        rng_patcher_options=rng_patcher_options,
-        fmtstr_checker_options=fmtstr_checker_options,
-    )
-    return tuple(
-        _STEP_DEFINITIONS_BY_NAME[step_name].build(configured_options)
-        for step_name in normalized_names
-    )
+    selected_names = _normalize_step_names(step_names)
+    runners = {
+        INITIALIZE_FRAMES_STEP: _initialize_frames_runner(
+            initialize_frames_options or InitializeFramesStepOptions()
+        ),
+        SHADOW_STACK_STEP: _shadow_stack_runner(
+            shadow_stack_options or ShadowStackStepOptions()
+        ),
+        RNG_PATCHER_STEP: _rng_patcher_runner(
+            rng_patcher_options or RngPatcherStepOptions()
+        ),
+        FMTSTR_CHECKER_STEP: _fmtstr_checker_runner(
+            fmtstr_checker_options or FmtStrCheckerStepOptions()
+        ),
+    }
+    return tuple((name, runners[name]) for name in selected_names)
 
 
-def _merge_options(
-    options: PipelineOptions | None,
-    *,
-    shadow_stack_options: ShadowStackStepOptions | None,
-    initialize_frames_options: InitializeFramesStepOptions | None,
-    rng_patcher_options: RngPatcherStepOptions | None,
-    fmtstr_checker_options: FmtStrCheckerStepOptions | None,
-) -> PipelineOptions:
-    base = options or PipelineOptions()
-    return PipelineOptions(
-        shadow_stack=shadow_stack_options or base.shadow_stack,
-        initialize_frames=initialize_frames_options or base.initialize_frames,
-        rng_patcher=rng_patcher_options or base.rng_patcher,
-        fmtstr_checker=fmtstr_checker_options or base.fmtstr_checker,
-    )
+def _initialize_frames_runner(options: InitializeFramesStepOptions) -> StepFunction:
+    def run(input_path: Path | str, output_path: Path | str) -> object:
+        return initialize_stack_frames(
+            input_path,
+            output_path,
+            trampoline_size=options.trampoline_size,
+        )
+
+    return run
+
+
+def _shadow_stack_runner(options: ShadowStackStepOptions) -> StepFunction:
+    def run(input_path: Path | str, output_path: Path | str) -> object:
+        return run_shadow_stack_step(input_path, output_path, options=options)
+
+    return run
+
+
+def _rng_patcher_runner(options: RngPatcherStepOptions) -> StepFunction:
+    def run(input_path: Path | str, output_path: Path | str) -> object:
+        return patch_rng_imports(
+            input_path,
+            output_path,
+            library_name=options.library_name,
+            source_path=options.source_path,
+        )
+
+    return run
+
+
+def _fmtstr_checker_runner(options: FmtStrCheckerStepOptions) -> StepFunction:
+    def run(input_path: Path | str, output_path: Path | str) -> object:
+        return patch_format_strings(
+            input_path,
+            output_path,
+            trampoline_size=options.trampoline_size,
+            library_name=options.library_name,
+            source_path=options.source_path,
+        )
+
+    return run
 
 
 def _normalize_step_names(step_names: Sequence[str] | None) -> tuple[str, ...]:
@@ -145,8 +140,9 @@ def _normalize_step_names(step_names: Sequence[str] | None) -> tuple[str, ...]:
         repeated = ", ".join(sorted(set(duplicates)))
         raise ValueError(f"pipeline steps must be unique: {repeated}")
 
-    supported = set(available_step_names())
-    unknown = tuple(step_name for step_name in normalized if step_name not in supported)
+    unknown = tuple(
+        step_name for step_name in normalized if step_name not in _STEP_DESCRIPTIONS
+    )
     if unknown:
         supported_list = ", ".join(available_step_names())
         unknown_list = ", ".join(unknown)
@@ -159,19 +155,13 @@ def _normalize_step_names(step_names: Sequence[str] | None) -> tuple[str, ...]:
 
 __all__ = [
     "FMTSTR_CHECKER_STEP",
-    "FmtStrCheckerStep",
     "FmtStrCheckerStepOptions",
     "INITIALIZE_FRAMES_STEP",
-    "InitializeFramesStep",
     "InitializeFramesStepOptions",
-    "PipelineOptions",
     "RNG_PATCHER_STEP",
-    "RngPatcherStep",
     "RngPatcherStepOptions",
     "SHADOW_STACK_STEP",
-    "ShadowStackStep",
     "ShadowStackStepOptions",
-    "StepDefinition",
     "available_step_names",
     "available_steps",
     "build_steps",

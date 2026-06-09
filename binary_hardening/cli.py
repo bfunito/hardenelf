@@ -30,7 +30,6 @@ from shstk_injector.steps.shadow_stack import (
 from .api import run_hardening_pipeline
 from .pipeline import PipelineResult
 from .registry import (
-    PipelineOptions,
     available_step_names,
 )
 
@@ -58,22 +57,20 @@ def main(argv: list[str] | None = None) -> int:
             args.input,
             args.output,
             steps=selected_steps,
-            options=PipelineOptions(
-                shadow_stack=ShadowStackStepOptions(
-                    shadow_size=args.shadow_size,
-                    saved_addrs_size=args.saved_addrs_size,
-                    return_address_action=args.return_address_action,
-                    crash_message=args.crash_message,
-                    expand_only=args.expand_only,
-                    trap_fallback=args.trap_fallback,
-                    trap_fallback_callback=trap_fallback_callback,
-                ),
-                fmtstr_checker=FmtStrCheckerStepOptions(
-                    trampoline_size=args.fmtstr_trampoline_size,
-                ),
-                initialize_frames=InitializeFramesStepOptions(
-                    trampoline_size=args.init_frame_trampoline_size,
-                ),
+            shadow_stack_options=ShadowStackStepOptions(
+                shadow_size=args.shadow_size,
+                saved_addrs_size=args.saved_addrs_size,
+                return_address_action=args.return_address_action,
+                crash_message=args.crash_message,
+                expand_only=args.expand_only,
+                trap_fallback=args.trap_fallback,
+                trap_fallback_callback=trap_fallback_callback,
+            ),
+            fmtstr_checker_options=FmtStrCheckerStepOptions(
+                trampoline_size=args.fmtstr_trampoline_size,
+            ),
+            initialize_frames_options=InitializeFramesStepOptions(
+                trampoline_size=args.init_frame_trampoline_size,
             ),
         )
     except Exception as exc:

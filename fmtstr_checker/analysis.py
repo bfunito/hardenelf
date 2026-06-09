@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import lief
 
+from binary_hardening.symbols import FunctionSymbol, iter_function_symbols
 from binary_hardening.x86 import function_code_limit
 
 
 ARG_REGISTERS = ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
 XMM_REGISTERS = tuple(f"xmm{index}" for index in range(8))
 _PLT_ENTRY_SIZE = 0x10
-_SKIPPED_ENTRY_SYMBOLS = frozenset({"_start"})
 
 
 @dataclass(frozen=True)
@@ -31,16 +31,6 @@ class FormatFunctionSpec:
     @property
     def variadic_gpr_registers(self) -> tuple[str, ...]:
         return ARG_REGISTERS[self.fmt_arg_index + 1 :]
-
-
-@dataclass(frozen=True)
-class FunctionSymbol:
-    """A concrete function body from the symbol table."""
-
-    name: str
-    address: int
-    size: int
-    section: lief.ELF.Section
 
 
 @dataclass(frozen=True)
@@ -104,7 +94,7 @@ def find_format_calls(
     calls: list[FormatCall] = []
     skipped: list[SkippedFormatCall] = []
 
-    for function in _iter_function_symbols(binary):
+    for function in iter_function_symbols(binary, infer_missing_sizes=True):
         instructions = _disassemble_function(binary, disassembler, function)
         for index, instruction in enumerate(instructions):
             direct_target = _direct_call_target(instruction)
@@ -215,61 +205,6 @@ def _resolve_plt_targets(
                 )
 
     return targets
-
-
-def _iter_function_symbols(binary: lief.ELF.Binary) -> Iterable[FunctionSymbol]:
-    seen_addresses: set[int] = set()
-    functions: list[FunctionSymbol] = []
-
-    for symbol in binary.symtab_symbols:
-        if symbol.type != lief.ELF.Symbol.TYPE.FUNC:
-            continue
-        if symbol.value == 0 or symbol.name in _SKIPPED_ENTRY_SYMBOLS:
-            continue
-        if symbol.value in seen_addresses:
-            continue
-
-        section = binary.section_from_virtual_address(symbol.value)
-        if section is None or not section.has(lief.ELF.Section.FLAGS.EXECINSTR):
-            continue
-        if section.name.startswith(".plt"):
-            continue
-
-        seen_addresses.add(symbol.value)
-        functions.append(
-            FunctionSymbol(
-                name=symbol.name or f"sub_{symbol.value:x}",
-                address=symbol.value,
-                size=symbol.size,
-                section=section,
-            )
-        )
-
-    sorted_functions = sorted(functions, key=lambda function: function.address)
-    bounded_functions: list[FunctionSymbol] = []
-    for index, function in enumerate(sorted_functions):
-        section_end = function.section.virtual_address + function.section.size
-        next_address = section_end
-        for next_function in sorted_functions[index + 1 :]:
-            if next_function.section == function.section:
-                next_address = next_function.address
-                break
-
-        size = function.size
-        if size <= 0:
-            size = max(0, min(next_address, section_end) - function.address)
-        if size <= 0:
-            continue
-        bounded_functions.append(
-            FunctionSymbol(
-                name=function.name,
-                address=function.address,
-                size=size,
-                section=function.section,
-            )
-        )
-
-    return bounded_functions
 
 
 def _disassemble_function(

@@ -7,9 +7,9 @@ from safe_rng.saferand import (
 )
 from safe_rng.step import (
     PatchedImport,
+    RNG_PATCHER_DESCRIPTION,
     RNG_PATCHER_STEP,
     RngPatchResult,
-    RngPatcherStep,
     RngPatcherStepOptions,
     patch_rng_imports,
 )
@@ -17,9 +17,9 @@ from safe_rng.step import (
 __all__ = [
     "DEFAULT_SAFERAND_LIBRARY_NAME",
     "PatchedImport",
+    "RNG_PATCHER_DESCRIPTION",
     "RNG_PATCHER_STEP",
     "RngPatchResult",
-    "RngPatcherStep",
     "RngPatcherStepOptions",
     "build_saferand_library",
     "bundled_saferand_source",

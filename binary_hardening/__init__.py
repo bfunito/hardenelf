@@ -1,13 +1,21 @@
-"""Central pipeline API for binary hardening passes."""
+"""Public API for binary hardening passes.
 
-from binary_hardening.pipeline import CompletedStep, PipelineResult, PipelineStep
+The root package stays lightweight so internal modules can import
+``binary_hardening.elf`` without loading the whole pipeline.
+"""
+
+from binary_hardening.pipeline import (
+    CompletedStep,
+    PipelineResult,
+    PipelineStep,
+    StepFunction,
+)
 
 __all__ = [
     "CompletedStep",
-    "PipelineOptions",
     "PipelineResult",
     "PipelineStep",
-    "StepDefinition",
+    "StepFunction",
     "available_step_names",
     "available_steps",
     "build_steps",
@@ -32,8 +40,6 @@ def __getattr__(name: str) -> object:
         return getattr(api, name)
 
     if name in {
-        "PipelineOptions",
-        "StepDefinition",
         "available_step_names",
         "available_steps",
         "build_steps",
