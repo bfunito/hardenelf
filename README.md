@@ -43,14 +43,6 @@ hardenelf \
   ./patched-binary
 ```
 
-The pipeline itself is centralized in `binary_hardening`. Individual features
-live in their own step packages:
-
-- `shstk_injector.steps.shadow_stack`
-- `initialize_frames.step`
-- `safe_rng.step`
-- `fmtstr_checker.step`
-
 Patch only the unsafe RNG imports:
 
 ```bash
