@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from importlib.metadata import PackageNotFoundError, version
+import os
 import sys
 from pathlib import Path
 
@@ -31,7 +32,15 @@ from .api import run_hardening_pipeline
 from .pipeline import PipelineResult
 from .registry import (
     available_step_names,
+    available_steps,
 )
+
+
+class _CliHelpFormatter(argparse.RawTextHelpFormatter):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        kwargs.setdefault("max_help_position", 30)
+        kwargs.setdefault("width", 96)
+        super().__init__(*args, **kwargs)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,87 +90,166 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _make_parser() -> argparse.ArgumentParser:
+    step_list = "\n".join(
+        f"  {name:<18} {description}" for name, description in available_steps()
+    )
     parser = argparse.ArgumentParser(
         prog="hardenelf",
-        description="Run selectable binary hardening passes against an ELF binary.",
+        description="Patch ELF binaries with selectable hardening passes.",
+        epilog=(
+            "passes:\n"
+            f"{step_list}\n\n"
+            "examples:\n"
+            "  hardenelf input output\n"
+            "  hardenelf -p shadow-stack -r compare-crash input output\n"
+            "  hardenelf --pass fmtstr-checker --pass rng-patcher input output"
+        ),
+        formatter_class=_CliHelpFormatter,
     )
-    parser.add_argument("input", type=Path, help="input ELF binary")
-    parser.add_argument("output", type=Path, help="rewritten output binary")
-    parser.add_argument(
+    parser.add_argument("input", type=Path, metavar="INPUT", help="ELF binary to patch")
+    parser.add_argument("output", type=Path, metavar="OUTPUT", help="patched binary path")
+
+    pipeline = parser.add_argument_group("pipeline")
+    pipeline.add_argument(
+        "-p",
+        "--pass",
+        dest="steps",
+        action="append",
+        choices=available_step_names(),
+        metavar="NAME",
+        help="hardening pass to run; repeat to choose order; default: all",
+    )
+    pipeline.add_argument(
         "--step",
         dest="steps",
         action="append",
         choices=available_step_names(),
-        help=(
-            "pipeline step to run; repeat in the desired order. "
-            "Defaults to all implemented steps in registry order"
-        ),
+        help=argparse.SUPPRESS,
     )
-    parser.add_argument(
-        "--shadow-size",
+
+    shadow = parser.add_argument_group("shadow stack")
+    shadow.add_argument(
+        "-s",
+        "--shadow",
+        dest="shadow_size",
         type=_parse_shadow_size,
         default=None,
-        help=(
-            "size of the executable .shadow section; use auto, decimal, or "
-            "0x-prefixed values; default: auto"
-        ),
+        metavar="SIZE",
+        help=".shadow size: auto, decimal, or 0x-prefixed; default: auto",
     )
-    parser.add_argument(
-        "--saved-addrs-size",
+    shadow.add_argument(
+        "-a",
+        "--saved",
+        dest="saved_addrs_size",
         type=_parse_int,
         default=0x1000,
-        help=(
-            "size of the writable .saved_addrs section; accepts decimal or "
-            "0x-prefixed values"
-        ),
+        metavar="SIZE",
+        help=".saved_addrs size: decimal or 0x-prefixed; default: 0x1000",
     )
-    parser.add_argument(
-        "--fmtstr-trampoline-size",
-        type=_parse_int,
-        default=0x4000,
-        help=(
-            "size of the executable .fmtstr_tramp section; accepts decimal or "
-            "0x-prefixed values"
-        ),
-    )
-    parser.add_argument(
-        "--init-frame-trampoline-size",
-        type=_parse_int,
-        default=0x4000,
-        help=(
-            "size of the executable .init_frames section; accepts decimal or "
-            "0x-prefixed values"
-        ),
-    )
-    parser.add_argument(
-        "--expand-only",
+    shadow.add_argument(
+        "-e",
+        "--expand",
+        dest="expand_only",
         action="store_true",
-        help="only add .shadow and .saved_addrs without writing trampolines",
+        help="only add shadow-stack sections",
     )
-    parser.add_argument(
-        "--return-address-action",
+    shadow.add_argument(
+        "-r",
+        "--ret",
+        dest="return_address_action",
         choices=[action.value for action in ReturnAddressAction],
         default=ReturnAddressAction.RESTORE.value,
-        help=(
-            "return-site behavior: restore saved return addresses, or compare and "
-            "crash on mismatch"
-        ),
+        metavar="MODE",
+        help="return handling: restore or compare-crash; default: restore",
     )
-    parser.add_argument(
-        "--crash-message",
-        help="message to write to stderr before crashing in compare-crash mode",
+    shadow.add_argument(
+        "-m",
+        "--message",
+        dest="crash_message",
+        metavar="TEXT",
+        help="stderr text before compare-crash trap",
     )
-    parser.add_argument(
-        "--trap-fallback",
+    shadow.add_argument(
+        "-t",
+        "--trap",
+        dest="trap_fallback",
         choices=[decision.value for decision in TrapFallbackDecision],
         default=TrapFallbackDecision.ASK.value,
-        help=(
-            "one-byte trap fallback for return sites that cannot use jump "
-            "strategies; ask prompts per function, allow always uses it, skip never "
-            "uses it"
-        ),
+        metavar="MODE",
+        help="SIGTRAP fallback: ask, allow, or skip; default: ask",
     )
+
+    trampolines = parser.add_argument_group("trampoline space")
+    trampolines.add_argument(
+        "-f",
+        "--fmtstr",
+        dest="fmtstr_trampoline_size",
+        type=_parse_int,
+        default=0x4000,
+        metavar="SIZE",
+        help=".fmtstr_tramp size: decimal or 0x-prefixed; default: 0x4000",
+    )
+    trampolines.add_argument(
+        "-i",
+        "--frames",
+        dest="init_frame_trampoline_size",
+        type=_parse_int,
+        default=0x4000,
+        metavar="SIZE",
+        help=".init_frames size: decimal or 0x-prefixed; default: 0x4000",
+    )
+
+    compatibility = parser.add_argument_group("compatibility")
+    compatibility.add_argument(
+        "--shadow-size",
+        dest="shadow_size",
+        type=_parse_shadow_size,
+        help=argparse.SUPPRESS,
+    )
+    compatibility.add_argument(
+        "--saved-addrs-size",
+        dest="saved_addrs_size",
+        type=_parse_int,
+        help=argparse.SUPPRESS,
+    )
+    compatibility.add_argument(
+        "--fmtstr-trampoline-size",
+        dest="fmtstr_trampoline_size",
+        type=_parse_int,
+        help=argparse.SUPPRESS,
+    )
+    compatibility.add_argument(
+        "--init-frame-trampoline-size",
+        dest="init_frame_trampoline_size",
+        type=_parse_int,
+        help=argparse.SUPPRESS,
+    )
+    compatibility.add_argument(
+        "--expand-only",
+        dest="expand_only",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    compatibility.add_argument(
+        "--return-address-action",
+        dest="return_address_action",
+        choices=[action.value for action in ReturnAddressAction],
+        help=argparse.SUPPRESS,
+    )
+    compatibility.add_argument(
+        "--crash-message",
+        dest="crash_message",
+        help=argparse.SUPPRESS,
+    )
+    compatibility.add_argument(
+        "--trap-fallback",
+        dest="trap_fallback",
+        choices=[decision.value for decision in TrapFallbackDecision],
+        help=argparse.SUPPRESS,
+    )
+
     parser.add_argument(
+        "-v",
         "--version",
         action="version",
         version=f"%(prog)s {_package_version()}",
@@ -190,6 +278,32 @@ def _parse_shadow_size(value: str) -> int | None:
     if value == "auto":
         return None
     return _parse_int(value)
+
+
+def _color_enabled() -> bool:
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def _style(text: str, code: str) -> str:
+    if not _color_enabled():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _accent(text: str) -> str:
+    return _style(text, "1;36")
+
+
+def _success(text: str) -> str:
+    return _style(text, "1;32")
+
+
+def _muted(text: str) -> str:
+    return _style(text, "2")
+
+
+def _print_fact(indent: str, label: str, value: object) -> None:
+    print(f"{indent}{_muted(f'{label}:')} {value}")
 
 
 def _validate_shadow_stack_selection(
@@ -241,14 +355,17 @@ def _validate_initialize_frames_selection(
 
 
 def _print_result(result: PipelineResult) -> None:
-    print(f"wrote {result.output_path}")
+    print(_accent("hardenelf"))
+    print(f"{_success('OK')} output: {result.output_path}")
     if len(result.steps) == 1:
+        print(f"{_muted('pass:')} {result.steps[0].name}")
         _print_step_result(result.steps[0].result)
         return
 
-    print(f"pipeline steps: {', '.join(step.name for step in result.steps)}")
-    for step in result.steps:
-        print(f"[{step.name}]")
+    print(f"{_muted('passes:')} {', '.join(step.name for step in result.steps)}")
+    for index, step in enumerate(result.steps, start=1):
+        print()
+        print(_accent(f"[{index}/{len(result.steps)}] {step.name}"))
         _print_step_result(step.result, indent="  ")
 
 
@@ -265,27 +382,27 @@ def _print_step_result(
     indent: str = "",
 ) -> None:
     if isinstance(result, RngPatchResult):
-        print(f"{indent}rng imports patched: {len(result.patched_imports)}")
+        _print_fact(indent, "rng imports patched", len(result.patched_imports))
         if result.library_path is not None:
-            print(f"{indent}library: {result.library_path}")
+            _print_fact(indent, "library", result.library_path)
         if result.runpath:
-            print(f"{indent}runpath: {':'.join(result.runpath)}")
+            _print_fact(indent, "runpath", ":".join(result.runpath))
         return
 
     if isinstance(result, FmtStrPatchResult):
-        print(f"{indent}format calls patched: {len(result.patched_calls)}")
+        _print_fact(indent, "format calls patched", len(result.patched_calls))
         if result.skipped_calls:
-            print(f"{indent}format calls skipped: {len(result.skipped_calls)}")
+            _print_fact(indent, "format calls skipped", len(result.skipped_calls))
         if result.library_path is not None:
-            print(f"{indent}library: {result.library_path}")
+            _print_fact(indent, "library", result.library_path)
         if result.runpath:
-            print(f"{indent}runpath: {':'.join(result.runpath)}")
+            _print_fact(indent, "runpath", ":".join(result.runpath))
         return
 
     if isinstance(result, FrameInitializationResult):
-        print(f"{indent}initialized stack frames: {len(result.initialized_frames)}")
+        _print_fact(indent, "initialized stack frames", len(result.initialized_frames))
         if result.skipped:
-            print(f"{indent}stack frames skipped: {len(result.skipped)}")
+            _print_fact(indent, "stack frames skipped", len(result.skipped))
             for skipped in result.skipped:
                 print(
                     f"{indent}  - {skipped.function_name} "
@@ -300,7 +417,7 @@ def _print_step_result(
         return
 
     if not isinstance(result, (ExpansionResult, InjectionResult)):
-        print(f"{indent}completed")
+        print(f"{indent}{_success('completed')}")
         return
 
     for section in (result.shadow, result.saved_addrs):
@@ -313,11 +430,11 @@ def _print_step_result(
             f"flags={flags}"
         )
     if isinstance(result, InjectionResult):
-        print(f"{indent}pie: {'yes' if result.is_pie else 'no'}")
-        print(f"{indent}entry trampolines: {len(result.trampolines)}")
-        print(f"{indent}return trampolines: {len(result.return_trampolines)}")
+        _print_fact(indent, "pie", "yes" if result.is_pie else "no")
+        _print_fact(indent, "entry trampolines", len(result.trampolines))
+        _print_fact(indent, "return trampolines", len(result.return_trampolines))
         if result.skipped:
-            print(f"{indent}skipped functions: {len(result.skipped)}")
+            _print_fact(indent, "skipped functions", len(result.skipped))
             for skipped in result.skipped:
                 print(
                     f"{indent}  - {skipped.function_name} "

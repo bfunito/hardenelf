@@ -3,7 +3,7 @@ from io import StringIO
 from pathlib import Path
 import unittest
 
-from binary_hardening.cli import _parse_shadow_size, _print_step_result
+from binary_hardening.cli import _make_parser, _parse_shadow_size, _print_step_result
 from initialize_frames.step import FrameInitializationResult, SkippedFrame
 from shstk_injector.entry_trampoline import EntryTrampoline
 from shstk_injector.expand import AddedSection
@@ -12,6 +12,82 @@ from shstk_injector.steps.shadow_stack import InjectionResult, SkippedFunction
 
 
 class CliOutputTests(unittest.TestCase):
+    def test_parser_accepts_short_modern_options(self) -> None:
+        args = _make_parser().parse_args(
+            [
+                "-p",
+                "shadow-stack",
+                "-s",
+                "auto",
+                "-a",
+                "0x2000",
+                "-f",
+                "0x3000",
+                "-i",
+                "0x5000",
+                "-e",
+                "-r",
+                "compare-crash",
+                "-m",
+                "boom",
+                "-t",
+                "skip",
+                "input",
+                "output",
+            ]
+        )
+
+        self.assertEqual(args.steps, ["shadow-stack"])
+        self.assertIsNone(args.shadow_size)
+        self.assertEqual(args.saved_addrs_size, 0x2000)
+        self.assertEqual(args.fmtstr_trampoline_size, 0x3000)
+        self.assertEqual(args.init_frame_trampoline_size, 0x5000)
+        self.assertTrue(args.expand_only)
+        self.assertEqual(args.return_address_action, "compare-crash")
+        self.assertEqual(args.crash_message, "boom")
+        self.assertEqual(args.trap_fallback, "skip")
+
+    def test_parser_keeps_legacy_long_options_hidden(self) -> None:
+        parser = _make_parser()
+        args = parser.parse_args(
+            [
+                "--step",
+                "shadow-stack",
+                "--shadow-size",
+                "0x2000",
+                "--saved-addrs-size",
+                "0x3000",
+                "--fmtstr-trampoline-size",
+                "0x4000",
+                "--init-frame-trampoline-size",
+                "0x5000",
+                "--expand-only",
+                "--return-address-action",
+                "compare-crash",
+                "--crash-message",
+                "boom",
+                "--trap-fallback",
+                "skip",
+                "input",
+                "output",
+            ]
+        )
+        help_text = parser.format_help()
+
+        self.assertEqual(args.steps, ["shadow-stack"])
+        self.assertEqual(args.shadow_size, 0x2000)
+        self.assertEqual(args.saved_addrs_size, 0x3000)
+        self.assertEqual(args.fmtstr_trampoline_size, 0x4000)
+        self.assertEqual(args.init_frame_trampoline_size, 0x5000)
+        self.assertTrue(args.expand_only)
+        self.assertEqual(args.return_address_action, "compare-crash")
+        self.assertEqual(args.crash_message, "boom")
+        self.assertEqual(args.trap_fallback, "skip")
+        self.assertIn("-p, --pass", help_text)
+        self.assertIn("-r, --ret", help_text)
+        self.assertNotIn("--return-address-action", help_text)
+        self.assertNotIn("--fmtstr-trampoline-size", help_text)
+
     def test_shadow_size_parser_accepts_auto(self) -> None:
         self.assertIsNone(_parse_shadow_size("auto"))
 
