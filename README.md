@@ -1,4 +1,4 @@
-# Binary Hardening Pipeline
+# hardenelf
 
 Prototype binary rewriter for injecting security hardening passes into
 non-stripped ELF binaries, including PIE executables. The current implementation
