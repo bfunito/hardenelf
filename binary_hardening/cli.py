@@ -196,7 +196,7 @@ def _make_parser() -> argparse.ArgumentParser:
         type=_parse_auto_size,
         default=None,
         metavar="SIZE",
-        help=".init_frames size: auto, decimal, or 0x-prefixed; default: auto",
+        help=".hardenelf frame budget: auto, decimal, or 0x-prefixed; default: auto",
     )
 
     compatibility = parser.add_argument_group("compatibility")

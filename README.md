@@ -6,7 +6,7 @@ ships four pipeline steps:
 
 - `initialize-frames`, which patches conventional frame-pointer functions so
   their allocated stack frame is zeroed immediately after setup.
-- `shadow-stack`, which expands the target binary with `.shadow` and
+- `shadow-stack`, which expands the target binary with `.hardenelf` and
   `.saved_addrs` sections and then patches function entry and return sites with
   trampolines that save return addresses and either restore them or validate
   them before returning.
@@ -97,16 +97,16 @@ Only expand the binary with the sections required by the `shadow-stack` step:
 hardenelf --expand ./input-binary ./expanded-binary
 ```
 
-By default, `.shadow`, `.fmtstr_tramp`, and `.init_frames` are sized
+By default, `.hardenelf` and `.fmtstr_tramp` are sized
 automatically from the generated trampoline bodies and rounded up to a page
 boundary. You can still override section sizes with decimal or `0x`-prefixed
 values:
 
 ```bash
-hardenelf --shadow 0x2000 --saved 0x2000 --fmtstr 0x3000 --frames 0x3000 ./input ./output
+hardenelf --hardenelf 0x2000 --saved 0x2000 --fmtstr 0x3000 ./input ./output
 ```
 
-Use `--shadow auto`, `--fmtstr auto`, or `--frames auto` to request the default
+Use `--hardenelf auto` or `--fmtstr auto` to request the default
 automatic behavior explicitly.
 
 Run the tests:

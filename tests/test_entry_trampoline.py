@@ -14,7 +14,7 @@ from tests.fixture_binaries import (
 
 
 class EntryTrampolineTests(unittest.TestCase):
-    def test_auto_shadow_size_is_page_aligned(self) -> None:
+    def test_auto_hardenelf_size_is_page_aligned(self) -> None:
         build_fixtures(self)
         require_injector_dependencies(self)
 

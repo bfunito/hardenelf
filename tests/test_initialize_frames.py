@@ -10,6 +10,7 @@ from initialize_frames.step import (
     initialize_stack_frames,
 )
 from binary_hardening.hardenelf import HARDENELF_SECTION
+from shstk_injector.steps.shadow_stack import SHADOW_STACK_STEP, InjectionResult
 from tests.fixture_binaries import (
     BIN_DIR,
     build_fixtures,
@@ -56,6 +57,40 @@ class InitializeFramesTests(unittest.TestCase):
         self.assertTrue(_is_pie(output_path))
         self.assertNotEqual(run_binary(input_path).returncode, 0)
         self.assertEqual(run_binary(output_path).returncode, 0)
+
+    def test_frame_and_shadow_stack_share_entry_trampolines(self) -> None:
+        input_path, output_path, result = run_pipeline_fixture(
+            self,
+            "initialize_frames",
+            steps=(INITIALIZE_FRAMES_STEP, SHADOW_STACK_STEP),
+            hardenelf_size=0x6000,
+        )
+
+        frame_result = result.result_for_step(INITIALIZE_FRAMES_STEP)
+        shadow_result = result.result_for_step(SHADOW_STACK_STEP)
+        self.assertIsInstance(frame_result, FrameInitializationResult)
+        self.assertIsInstance(shadow_result, InjectionResult)
+        assert isinstance(frame_result, FrameInitializationResult)
+        assert isinstance(shadow_result, InjectionResult)
+
+        entry_by_function = {
+            entry.function_address: entry
+            for entry in shadow_result.trampolines
+        }
+        shared_frames = [
+            frame
+            for frame in frame_result.initialized_frames
+            if frame.function_address in entry_by_function
+        ]
+
+        self.assertNotEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        self.assertGreaterEqual(len(shared_frames), 2)
+        for frame in shared_frames:
+            self.assertEqual(
+                frame.trampoline_address,
+                entry_by_function[frame.function_address].trampoline_address,
+            )
 
     def test_initialize_frames_is_noop_without_stack_allocations(self) -> None:
         build_fixtures(self)

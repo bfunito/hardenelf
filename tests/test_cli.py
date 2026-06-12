@@ -162,7 +162,7 @@ class CliOutputTests(unittest.TestCase):
                     "function does not allocate a stack frame",
                 ),
             ),
-            section_name=".init_frames",
+            section_name=".hardenelf",
             section_address=0x600000,
             section_size=0x1000,
         )

@@ -52,6 +52,16 @@ from shstk_injector.expand import (
     expand_binary,
     section_summary,
 )
+from initialize_frames.analysis import (
+    FrameInitializationSite,
+    collect_initialization_site,
+)
+from initialize_frames.step import (
+    FrameInitializationResult,
+    InitializedFrame,
+    SkippedFrame,
+)
+from initialize_frames.trampoline import build_frame_initializer_payload
 
 
 SHADOW_STACK_CURSOR_SIZE = 8
@@ -129,12 +139,14 @@ class _PlannedFunctionPatch:
     entry_body: bytes
     entry_overwritten_size: int
     return_bodies: list[_ReturnBody]
+    frame_site: FrameInitializationSite | None = None
 
 
 @dataclass(frozen=True)
 class _ShadowStackPlan:
     patches: tuple[_PlannedFunctionPatch, ...]
     skipped: tuple[SkippedFunction, ...]
+    skipped_frames: tuple[SkippedFrame, ...]
     trap_installer_address: int | None
     trap_installer_body: bytes | None
     required_hardenelf_size: int
@@ -245,6 +257,135 @@ def inject_shadow_stack(
     )
 
 
+def inject_shadow_stack_and_initialize_frames(
+    input_path: Path | str,
+    output_path: Path | str,
+    *,
+    hardenelf_size: int | None = None,
+    saved_addrs_size: int = 0x1000,
+    return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
+    crash_message: str | bytes | None = None,
+    trap_fallback: TrapFallbackDecision | str = TrapFallbackDecision.ASK,
+    trap_fallback_callback: Callable[[str, int, str], bool] | None = None,
+) -> tuple[InjectionResult, FrameInitializationResult]:
+    """Patch shadow stack and frame initialization through shared entries."""
+
+    action = _normalize_return_address_action(return_address_action)
+    crash_message_bytes = _normalize_crash_message(action, crash_message)
+    trap_decision = _normalize_trap_fallback_decision(trap_fallback)
+    trap_fallback_callback = _memoize_trap_fallback_callback(trap_fallback_callback)
+
+    disassembler = make_disassembler()
+    assembler = make_assembler()
+
+    resolved_hardenelf_size = _resolve_hardenelf_size(
+        input_path,
+        hardenelf_size=hardenelf_size,
+        saved_addrs_size=saved_addrs_size,
+        action=action,
+        crash_message=crash_message_bytes,
+        trap_decision=trap_decision,
+        trap_fallback_callback=trap_fallback_callback,
+        disassembler=disassembler,
+        assembler=assembler,
+        include_frame_initializers=True,
+    )
+    expanded = expand_binary(
+        input_path,
+        output_path,
+        hardenelf_size=resolved_hardenelf_size,
+        saved_addrs_size=saved_addrs_size,
+    )
+    output_file = expanded.output_path
+
+    binary = parse_elf(output_file)
+    ensure_x86_64(binary)
+    is_pie = is_pie_binary(binary)
+
+    saved_addrs = require_section(binary, SAVED_ADDRS_SECTION)
+    if saved_addrs.size <= SHADOW_STACK_CURSOR_SIZE:
+        raise ValueError(".saved_addrs must be larger than eight bytes")
+
+    frame_sites, skipped_frames = _collect_frame_sites(binary, disassembler)
+    plan = _build_shadow_stack_plan(
+        binary,
+        disassembler=disassembler,
+        assembler=assembler,
+        action=action,
+        crash_message=crash_message_bytes,
+        trap_decision=trap_decision,
+        trap_fallback_callback=trap_fallback_callback,
+        enforce_hardenelf_limit=True,
+        frame_sites=frame_sites,
+        skipped_frames=tuple(skipped_frames),
+    )
+
+    trampolines: list[EntryTrampoline] = []
+    initialized_frames: list[InitializedFrame] = []
+    return_trampolines: list[ReturnTrampoline] = []
+
+    for patch in plan.patches:
+        _patch_entry(
+            binary,
+            patch.function,
+            patch.entry_body_address,
+            patch.entry_body,
+            patch.entry_instructions,
+            patch.entry_overwritten_size,
+            trampolines,
+        )
+        if patch.frame_site is not None:
+            initialized_frames.append(
+                _initialized_frame_summary(
+                    patch.frame_site,
+                    tuple(patch.entry_instructions),
+                    patch.entry_body_address,
+                )
+            )
+        _patch_returns(
+            binary,
+            patch.function,
+            patch.return_bodies,
+            return_trampolines,
+        )
+
+    if not trampolines and not initialized_frames:
+        raise ValueError("no shared hardening trampolines were written")
+
+    if plan.trap_installer_body is not None:
+        if plan.trap_installer_address is None:
+            raise ValueError("trap installer address is missing")
+        binary.patch_address(
+            plan.trap_installer_address,
+            list(plan.trap_installer_body),
+        )
+        binary.header.entrypoint = plan.trap_installer_address
+
+    binary.write(output_file)
+    rewritten = parse_elf(output_file)
+    hardenelf = section_summary(require_section(rewritten, HARDENELF_SECTION))
+    saved = section_summary(require_section(rewritten, SAVED_ADDRS_SECTION))
+
+    shadow_result = InjectionResult(
+        output_path=output_file,
+        hardenelf=hardenelf,
+        saved_addrs=saved,
+        trampolines=tuple(trampolines),
+        skipped=plan.skipped,
+        return_trampolines=tuple(return_trampolines),
+        is_pie=is_pie,
+    )
+    frame_result = FrameInitializationResult(
+        output_path=output_file,
+        initialized_frames=tuple(initialized_frames),
+        skipped=plan.skipped_frames,
+        section_name=HARDENELF_SECTION,
+        section_address=hardenelf.virtual_address,
+        section_size=hardenelf.size,
+    )
+    return shadow_result, frame_result
+
+
 def run_shadow_stack_step(
     input_path: Path | str,
     output_path: Path | str,
@@ -287,6 +428,7 @@ def _resolve_hardenelf_size(
     trap_fallback_callback: Callable[[str, int, str], bool] | None,
     disassembler: Any,
     assembler: Any,
+    include_frame_initializers: bool = False,
 ) -> int:
     if hardenelf_size is not None:
         return hardenelf_size
@@ -313,6 +455,14 @@ def _resolve_hardenelf_size(
             saved_addrs = require_section(binary, SAVED_ADDRS_SECTION)
             if saved_addrs.size <= SHADOW_STACK_CURSOR_SIZE:
                 raise ValueError(".saved_addrs must be larger than eight bytes")
+            frame_sites: dict[int, FrameInitializationSite] | None = None
+            skipped_frames: tuple[SkippedFrame, ...] = ()
+            if include_frame_initializers:
+                frame_sites, frame_skips = _collect_frame_sites(
+                    binary,
+                    disassembler,
+                )
+                skipped_frames = tuple(frame_skips)
 
             plan = _build_shadow_stack_plan(
                 binary,
@@ -323,6 +473,8 @@ def _resolve_hardenelf_size(
                 trap_decision=trap_decision,
                 trap_fallback_callback=trap_fallback_callback,
                 enforce_hardenelf_limit=False,
+                frame_sites=frame_sites,
+                skipped_frames=skipped_frames,
             )
             needed_size = _round_up_to_page(plan.required_hardenelf_size)
             if needed_size == candidate_size:
@@ -342,6 +494,8 @@ def _build_shadow_stack_plan(
     trap_decision: TrapFallbackDecision,
     trap_fallback_callback: Callable[[str, int, str], bool] | None,
     enforce_hardenelf_limit: bool,
+    frame_sites: dict[int, FrameInitializationSite] | None = None,
+    skipped_frames: tuple[SkippedFrame, ...] = (),
 ) -> _ShadowStackPlan:
     is_pie = is_pie_binary(binary)
     allow_absolute_saved_addrs = not is_pie
@@ -352,14 +506,23 @@ def _build_shadow_stack_plan(
     patches: list[_PlannedFunctionPatch] = []
     trap_entries: list[_TrapEntry] = []
     skipped: list[SkippedFunction] = []
+    remaining_skipped_frames = list(skipped_frames)
+    frame_sites_by_address = frame_sites or {}
 
     for function in iter_function_symbols(binary):
+        frame_site = frame_sites_by_address.get(function.address)
         try:
             entry_instructions = collect_entry_instructions(
                 binary,
                 disassembler,
                 function,
+                min_size=(
+                    frame_site.prologue_size
+                    if frame_site is not None
+                    else NEAR_JUMP_SIZE
+                ),
             )
+            shadow_skip: SkipFunction | None = None
             try:
                 return_sites = collect_return_sites(binary, disassembler, function)
             except TrapFallbackCandidate as exc:
@@ -369,15 +532,27 @@ def _build_shadow_stack_plan(
                     function,
                     str(exc),
                 ):
-                    raise SkipFunction(
+                    shadow_skip = SkipFunction(
                         _trap_fallback_skip_reason(trap_decision, str(exc))
-                    ) from exc
-                return_sites = collect_return_sites(
-                    binary,
-                    disassembler,
-                    function,
-                    allow_trap_fallback=True,
+                    )
+                    return_sites = []
+                else:
+                    return_sites = collect_return_sites(
+                        binary,
+                        disassembler,
+                        function,
+                        allow_trap_fallback=True,
+                    )
+            except SkipFunction as exc:
+                shadow_skip = exc
+                return_sites = []
+
+            if shadow_skip is not None:
+                skipped.append(
+                    SkippedFunction(function.name, function.address, str(shadow_skip))
                 )
+                if frame_site is None:
+                    continue
 
             entry_overwritten_size = sum(
                 instruction.size for instruction in entry_instructions
@@ -397,6 +572,11 @@ def _build_shadow_stack_plan(
                 saved_addrs_address=saved_addrs.virtual_address,
                 allow_absolute_saved_addrs=allow_absolute_saved_addrs,
                 return_sites=return_sites,
+                include_shadow_entry=shadow_skip is None,
+                after_relocated=_frame_entry_payloads(
+                    assembler,
+                    frame_site,
+                ),
             )
             return_bodies: list[_ReturnBody] = []
             next_hardenelf_cursor = entry_body_address + len(entry_body)
@@ -437,6 +617,14 @@ def _build_shadow_stack_plan(
                 )
 
             if enforce_hardenelf_limit and next_hardenelf_cursor > hardenelf_end:
+                if frame_site is not None:
+                    remaining_skipped_frames.append(
+                        SkippedFrame(
+                            function.name,
+                            function.address,
+                            "not enough room left in .hardenelf",
+                        )
+                    )
                 skipped.append(
                     SkippedFunction(
                         function.name,
@@ -454,6 +642,7 @@ def _build_shadow_stack_plan(
                     entry_body=entry_body,
                     entry_overwritten_size=entry_overwritten_size,
                     return_bodies=return_bodies,
+                    frame_site=frame_site,
                 )
             )
             trap_entries.extend(
@@ -466,6 +655,10 @@ def _build_shadow_stack_plan(
             )
             hardenelf_cursor = next_hardenelf_cursor
         except SkipFunction as exc:
+            if frame_site is not None:
+                remaining_skipped_frames.append(
+                    SkippedFrame(function.name, function.address, str(exc))
+                )
             skipped.append(SkippedFunction(function.name, function.address, str(exc)))
 
     trap_installer_address = None
@@ -486,6 +679,7 @@ def _build_shadow_stack_plan(
     return _ShadowStackPlan(
         patches=tuple(patches),
         skipped=tuple(skipped),
+        skipped_frames=tuple(remaining_skipped_frames),
         trap_installer_address=trap_installer_address,
         trap_installer_body=trap_installer_body,
         required_hardenelf_size=hardenelf_cursor - hardenelf.virtual_address,
@@ -558,6 +752,41 @@ def _memoize_trap_fallback_callback(
     return memoized
 
 
+def _collect_frame_sites(
+    binary: lief.ELF.Binary,
+    disassembler: Any,
+) -> tuple[dict[int, FrameInitializationSite], list[SkippedFrame]]:
+    sites: dict[int, FrameInitializationSite] = {}
+    skipped: list[SkippedFrame] = []
+
+    for function in iter_function_symbols(binary):
+        try:
+            site = collect_initialization_site(binary, disassembler, function)
+            sites[function.address] = site
+        except SkipFunction as exc:
+            skipped.append(SkippedFrame(function.name, function.address, str(exc)))
+
+    return sites, skipped
+
+
+def _initialized_frame_summary(
+    site: FrameInitializationSite,
+    entry_instructions: tuple[Any, ...],
+    trampoline_address: int,
+) -> InitializedFrame:
+    return InitializedFrame(
+        function_name=site.function.name,
+        function_address=site.function.address,
+        patch_address=site.function.address,
+        trampoline_address=trampoline_address,
+        frame_size=site.frame_size,
+        overwritten_size=sum(instruction.size for instruction in entry_instructions),
+        original_bytes=b"".join(
+            bytes(instruction.bytes) for instruction in entry_instructions
+        ),
+    )
+
+
 def _allow_trap_fallback(
     decision: TrapFallbackDecision,
     callback: Callable[[str, int, str], bool] | None,
@@ -606,25 +835,30 @@ def _build_entry_body(
     saved_addrs_address: int,
     allow_absolute_saved_addrs: bool,
     return_sites: list[ReturnSite],
+    include_shadow_entry: bool = True,
+    after_relocated: tuple[Callable[[int], bytes], ...] = (),
 ) -> bytes:
     rbx_jump_target = _rbx_jump_target(return_sites, trampoline_address)
 
     for _ in range(3):
-        before_relocated = (
-            lambda block_address, target=rbx_jump_target: _build_shadow_entry_block(
-                assembler=assembler,
-                block_address=block_address,
-                saved_addrs_address=saved_addrs_address,
-                allow_absolute_saved_addrs=allow_absolute_saved_addrs,
-                rbx_jump_target=target,
-            ),
-        )
+        before_relocated = ()
+        if include_shadow_entry:
+            before_relocated = (
+                lambda block_address, target=rbx_jump_target: _build_shadow_entry_block(
+                    assembler=assembler,
+                    block_address=block_address,
+                    saved_addrs_address=saved_addrs_address,
+                    allow_absolute_saved_addrs=allow_absolute_saved_addrs,
+                    rbx_jump_target=target,
+                ),
+            )
         body = build_entry_trampoline(
             assembler=assembler,
             instructions=instructions,
             trampoline_address=trampoline_address,
             return_address=return_address,
             before_relocated=before_relocated,
+            after_relocated=after_relocated,
         )
         body = pad_to_alignment(body)
         next_rbx_jump_target = _rbx_jump_target(
@@ -636,6 +870,21 @@ def _build_entry_body(
         rbx_jump_target = next_rbx_jump_target
 
     raise SkipFunction("could not stabilize RBX return trampoline address")
+
+
+def _frame_entry_payloads(
+    assembler: Any,
+    frame_site: FrameInitializationSite | None,
+) -> tuple[Callable[[int], bytes], ...]:
+    if frame_site is None:
+        return ()
+    return (
+        lambda block_address: build_frame_initializer_payload(
+            assembler=assembler,
+            site=frame_site,
+            block_address=block_address,
+        ),
+    )
 
 
 def _build_shadow_entry_block(
@@ -903,6 +1152,7 @@ __all__ = [
     "ShadowStackStepOptions",
     "SkippedFunction",
     "TrapFallbackDecision",
+    "inject_shadow_stack_and_initialize_frames",
     "inject_shadow_stack",
     "run_shadow_stack_step",
 ]
