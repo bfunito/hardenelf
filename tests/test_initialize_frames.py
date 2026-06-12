@@ -10,6 +10,7 @@ from initialize_frames.step import (
     initialize_stack_frames,
 )
 from binary_hardening.hardenelf import HARDENELF_SECTION
+from safe_rng.step import RNG_PATCHER_STEP
 from shstk_injector.steps.shadow_stack import SHADOW_STACK_STEP, InjectionResult
 from tests.fixture_binaries import (
     BIN_DIR,
@@ -91,6 +92,20 @@ class InitializeFramesTests(unittest.TestCase):
                 frame.trampoline_address,
                 entry_by_function[frame.function_address].trampoline_address,
             )
+
+    def test_shared_entry_trampolines_work_when_steps_are_not_adjacent(self) -> None:
+        _, output_path, result = run_pipeline_fixture(
+            self,
+            "initialize_frames",
+            steps=(INITIALIZE_FRAMES_STEP, RNG_PATCHER_STEP, SHADOW_STACK_STEP),
+            hardenelf_size=0x6000,
+        )
+
+        self.assertEqual(
+            tuple(step.name for step in result.steps),
+            (INITIALIZE_FRAMES_STEP, RNG_PATCHER_STEP, SHADOW_STACK_STEP),
+        )
+        self.assertEqual(run_binary(output_path).returncode, 0)
 
     def test_initialize_frames_is_noop_without_stack_allocations(self) -> None:
         build_fixtures(self)
