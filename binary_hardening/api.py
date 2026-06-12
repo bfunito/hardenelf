@@ -23,7 +23,7 @@ from safe_rng.step import (
     RngPatcherStepOptions,
     patch_rng_imports,
 )
-from shstk_injector.return_trampoline import ReturnAddressAction
+from binary_hardening.exit_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import (
     SHADOW_STACK_STEP,
     InjectionResult,
@@ -63,7 +63,7 @@ def inject_trampolines(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    shadow_size: int | None = None,
+    hardenelf_size: int | None = None,
     saved_addrs_size: int = 0x1000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
@@ -74,7 +74,7 @@ def inject_trampolines(
     return inject_shadow_stack(
         input_path,
         output_path,
-        shadow_size=shadow_size,
+        hardenelf_size=hardenelf_size,
         saved_addrs_size=saved_addrs_size,
         return_address_action=return_address_action,
         crash_message=crash_message,

@@ -20,7 +20,7 @@ from initialize_frames.step import (
 )
 from safe_rng.step import RngPatchResult
 from shstk_injector.expand import ExpansionResult
-from shstk_injector.return_trampoline import ReturnAddressAction
+from binary_hardening.exit_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import (
     SHADOW_STACK_STEP,
     InjectionResult,
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             steps=selected_steps,
             shadow_stack_options=ShadowStackStepOptions(
-                shadow_size=args.shadow_size,
+                hardenelf_size=args.hardenelf_size,
                 saved_addrs_size=args.saved_addrs_size,
                 return_address_action=args.return_address_action,
                 crash_message=args.crash_message,
@@ -130,12 +130,12 @@ def _make_parser() -> argparse.ArgumentParser:
     shadow = parser.add_argument_group("shadow stack")
     shadow.add_argument(
         "-s",
-        "--shadow",
-        dest="shadow_size",
-        type=_parse_shadow_size,
+        "--hardenelf",
+        dest="hardenelf_size",
+        type=_parse_hardenelf_size,
         default=None,
         metavar="SIZE",
-        help=".shadow size: auto, decimal, or 0x-prefixed; default: auto",
+        help=".hardenelf size: auto, decimal, or 0x-prefixed; default: auto",
     )
     shadow.add_argument(
         "-a",
@@ -151,7 +151,7 @@ def _make_parser() -> argparse.ArgumentParser:
         "--expand",
         dest="expand_only",
         action="store_true",
-        help="only add shadow-stack sections",
+        help="only add hardening sections",
     )
     shadow.add_argument(
         "-r",
@@ -201,9 +201,9 @@ def _make_parser() -> argparse.ArgumentParser:
 
     compatibility = parser.add_argument_group("compatibility")
     compatibility.add_argument(
-        "--shadow-size",
-        dest="shadow_size",
-        type=_parse_shadow_size,
+        "--hardenelf-size",
+        dest="hardenelf_size",
+        type=_parse_hardenelf_size,
         help=argparse.SUPPRESS,
     )
     compatibility.add_argument(
@@ -280,7 +280,7 @@ def _parse_auto_size(value: str) -> int | None:
     return _parse_int(value)
 
 
-def _parse_shadow_size(value: str) -> int | None:
+def _parse_hardenelf_size(value: str) -> int | None:
     return _parse_auto_size(value)
 
 
@@ -320,7 +320,7 @@ def _validate_shadow_stack_selection(
 
     shadow_stack_options_requested = (
         args.expand_only
-        or args.shadow_size is not None
+        or args.hardenelf_size is not None
         or args.saved_addrs_size != 0x1000
         or args.return_address_action != ReturnAddressAction.RESTORE.value
         or args.crash_message is not None
@@ -424,7 +424,7 @@ def _print_step_result(
         print(f"{indent}{_success('completed')}")
         return
 
-    for section in (result.shadow, result.saved_addrs):
+    for section in (result.hardenelf, result.saved_addrs):
         flags = ",".join(section.flags)
         print(
             f"{indent}{section.name}: "

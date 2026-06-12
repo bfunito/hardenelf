@@ -7,7 +7,7 @@ import subprocess
 import unittest
 
 from binary_hardening.api import inject_trampolines, run_hardening_pipeline
-from shstk_injector.return_trampoline import ReturnAddressAction
+from binary_hardening.exit_trampoline import ReturnAddressAction
 from shstk_injector.steps.shadow_stack import (
     ShadowStackStepOptions,
     TrapFallbackDecision,
@@ -50,7 +50,7 @@ def patch_fixture(
     test_case: unittest.TestCase,
     name: str,
     *,
-    shadow_size: int = 0x3000,
+    hardenelf_size: int = 0x3000,
     saved_addrs_size: int = 0x2000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
@@ -66,7 +66,7 @@ def patch_fixture(
     inject_trampolines(
         input_path,
         output_path,
-        shadow_size=shadow_size,
+        hardenelf_size=hardenelf_size,
         saved_addrs_size=saved_addrs_size,
         return_address_action=return_address_action,
         crash_message=crash_message,
@@ -80,7 +80,7 @@ def run_pipeline_fixture(
     name: str,
     *,
     steps: tuple[str, ...] | None = None,
-    shadow_size: int = 0x3000,
+    hardenelf_size: int = 0x3000,
     saved_addrs_size: int = 0x2000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
@@ -100,7 +100,7 @@ def run_pipeline_fixture(
         output_path,
         steps=steps,
         shadow_stack_options=ShadowStackStepOptions(
-            shadow_size=shadow_size,
+            hardenelf_size=hardenelf_size,
             saved_addrs_size=saved_addrs_size,
             return_address_action=return_address_action,
             crash_message=crash_message,

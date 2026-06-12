@@ -89,7 +89,10 @@ class StepRegistryTests(unittest.TestCase):
     def test_registry_binds_configured_shadow_stack_runner(self) -> None:
         step = build_steps(
             (SHADOW_STACK_STEP,),
-            shadow_stack_options=ShadowStackStepOptions(expand_only=True),
+            shadow_stack_options=ShadowStackStepOptions(
+                hardenelf_size=0x8000,
+                expand_only=True,
+            ),
         )[0]
 
         with patch("binary_hardening.registry.run_shadow_stack_step") as run_step:
@@ -97,6 +100,7 @@ class StepRegistryTests(unittest.TestCase):
 
         options = run_step.call_args.kwargs["options"]
         self.assertTrue(options.expand_only)
+        self.assertEqual(options.hardenelf_size, 0x8000)
 
     def test_registry_binds_configured_rng_patcher_runner(self) -> None:
         step = build_steps(

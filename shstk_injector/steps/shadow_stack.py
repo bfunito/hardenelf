@@ -12,34 +12,14 @@ from typing import Any
 import lief
 
 from binary_hardening.elf import parse_elf, require_section
-from binary_hardening.symbols import FunctionSymbol, iter_function_symbols
-from binary_hardening.x86 import (
-    NEAR_JUMP_SIZE,
-    SkipFunction,
-    assemble,
-    ensure_x86_64,
-    is_pie_binary,
-    make_assembler,
-    make_disassembler,
-    make_jump,
-    make_short_jump,
-    pad_to_alignment,
-    ranges_overlap,
-)
-from shstk_injector.entry_trampoline import (
+from binary_hardening.hardenelf import HARDENELF_SECTION
+from binary_hardening.entry_trampoline import (
     EntryTrampoline,
     build_entry_trampoline,
     collect_entry_instructions,
+    make_entry_patch,
 )
-from shstk_injector.expand import (
-    SAVED_ADDRS_SECTION,
-    SHADOW_SECTION,
-    AddedSection,
-    ExpansionResult,
-    expand_binary,
-    section_summary,
-)
-from shstk_injector.return_trampoline import (
+from binary_hardening.exit_trampoline import (
     ReturnAddressAction,
     ReturnPatchStrategy,
     ReturnSite,
@@ -49,6 +29,29 @@ from shstk_injector.return_trampoline import (
     build_return_trampoline,
     collect_return_sites,
 )
+from binary_hardening.symbols import FunctionSymbol, iter_function_symbols
+from binary_hardening.x86 import (
+    NEAR_JUMP_SIZE,
+    SkipFunction,
+    assemble,
+    ensure_x86_64,
+    is_pie_binary,
+    load_register_with_address,
+    load_r11_with_address,
+    make_assembler,
+    make_disassembler,
+    make_jump,
+    make_short_jump,
+    pad_to_alignment,
+    ranges_overlap,
+)
+from shstk_injector.expand import (
+    SAVED_ADDRS_SECTION,
+    AddedSection,
+    ExpansionResult,
+    expand_binary,
+    section_summary,
+)
 
 
 SHADOW_STACK_CURSOR_SIZE = 8
@@ -56,7 +59,7 @@ SHADOW_STACK_STEP = "shadow-stack"
 SHADOW_STACK_DESCRIPTION = (
     "Add the shadow-stack sections and inject entry/return trampolines."
 )
-SHADOW_SIZE_PAGE = 0x1000
+HARDENELF_SIZE_PAGE = 0x1000
 _TRAP_INSTRUCTION = b"\xcc"
 
 
@@ -82,7 +85,7 @@ class InjectionResult:
     """Summary returned after adding entry and return trampolines."""
 
     output_path: Path
-    shadow: AddedSection
+    hardenelf: AddedSection
     saved_addrs: AddedSection
     trampolines: tuple[EntryTrampoline, ...]
     skipped: tuple[SkippedFunction, ...]
@@ -94,7 +97,7 @@ class InjectionResult:
 class ShadowStackStepOptions:
     """Configuration for the shadow-stack pipeline step."""
 
-    shadow_size: int | None = None
+    hardenelf_size: int | None = None
     saved_addrs_size: int = 0x1000
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE
     crash_message: str | bytes | None = None
@@ -134,14 +137,14 @@ class _ShadowStackPlan:
     skipped: tuple[SkippedFunction, ...]
     trap_installer_address: int | None
     trap_installer_body: bytes | None
-    required_shadow_size: int
+    required_hardenelf_size: int
 
 
 def inject_shadow_stack(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    shadow_size: int | None = None,
+    hardenelf_size: int | None = None,
     saved_addrs_size: int = 0x1000,
     return_address_action: ReturnAddressAction | str = ReturnAddressAction.RESTORE,
     crash_message: str | bytes | None = None,
@@ -158,9 +161,9 @@ def inject_shadow_stack(
     disassembler = make_disassembler()
     assembler = make_assembler()
 
-    resolved_shadow_size = _resolve_shadow_size(
+    resolved_hardenelf_size = _resolve_hardenelf_size(
         input_path,
-        shadow_size=shadow_size,
+        hardenelf_size=hardenelf_size,
         saved_addrs_size=saved_addrs_size,
         action=action,
         crash_message=crash_message_bytes,
@@ -172,7 +175,7 @@ def inject_shadow_stack(
     expanded = expand_binary(
         input_path,
         output_path,
-        shadow_size=resolved_shadow_size,
+        hardenelf_size=resolved_hardenelf_size,
         saved_addrs_size=saved_addrs_size,
     )
     output_file = expanded.output_path
@@ -181,7 +184,7 @@ def inject_shadow_stack(
     ensure_x86_64(binary)
     is_pie = is_pie_binary(binary)
 
-    shadow = require_section(binary, SHADOW_SECTION)
+    hardenelf = require_section(binary, HARDENELF_SECTION)
     saved_addrs = require_section(binary, SAVED_ADDRS_SECTION)
     if saved_addrs.size <= SHADOW_STACK_CURSOR_SIZE:
         raise ValueError(".saved_addrs must be larger than eight bytes")
@@ -194,7 +197,7 @@ def inject_shadow_stack(
         crash_message=crash_message_bytes,
         trap_decision=trap_decision,
         trap_fallback_callback=trap_fallback_callback,
-        enforce_shadow_limit=True,
+        enforce_hardenelf_limit=True,
     )
     trampolines: list[EntryTrampoline] = []
     return_trampolines: list[ReturnTrampoline] = []
@@ -233,7 +236,7 @@ def inject_shadow_stack(
 
     return InjectionResult(
         output_path=output_file,
-        shadow=section_summary(require_section(rewritten, SHADOW_SECTION)),
+        hardenelf=section_summary(require_section(rewritten, HARDENELF_SECTION)),
         saved_addrs=section_summary(require_section(rewritten, SAVED_ADDRS_SECTION)),
         trampolines=tuple(trampolines),
         skipped=plan.skipped,
@@ -255,14 +258,16 @@ def run_shadow_stack_step(
         return expand_binary(
             input_path,
             output_path,
-            shadow_size=_manual_or_default_shadow_size(selected_options.shadow_size),
+            hardenelf_size=_manual_or_default_hardenelf_size(
+                selected_options.hardenelf_size
+            ),
             saved_addrs_size=selected_options.saved_addrs_size,
         )
 
     return inject_shadow_stack(
         input_path,
         output_path,
-        shadow_size=selected_options.shadow_size,
+        hardenelf_size=selected_options.hardenelf_size,
         saved_addrs_size=selected_options.saved_addrs_size,
         return_address_action=selected_options.return_address_action,
         crash_message=selected_options.crash_message,
@@ -271,10 +276,10 @@ def run_shadow_stack_step(
     )
 
 
-def _resolve_shadow_size(
+def _resolve_hardenelf_size(
     input_path: Path | str,
     *,
-    shadow_size: int | None,
+    hardenelf_size: int | None,
     saved_addrs_size: int,
     action: ReturnAddressAction,
     crash_message: bytes | None,
@@ -283,23 +288,23 @@ def _resolve_shadow_size(
     disassembler: Any,
     assembler: Any,
 ) -> int:
-    if shadow_size is not None:
-        return shadow_size
+    if hardenelf_size is not None:
+        return hardenelf_size
 
-    candidate_size = SHADOW_SIZE_PAGE
+    candidate_size = HARDENELF_SIZE_PAGE
     seen_sizes: set[int] = set()
     with TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for _ in range(8):
             if candidate_size in seen_sizes:
-                raise ValueError("automatic .shadow sizing did not converge")
+                raise ValueError("automatic .hardenelf sizing did not converge")
             seen_sizes.add(candidate_size)
 
-            expanded_path = tmpdir_path / f"shadow-auto-{candidate_size:x}"
+            expanded_path = tmpdir_path / f"hardenelf-auto-{candidate_size:x}"
             expand_binary(
                 input_path,
                 expanded_path,
-                shadow_size=candidate_size,
+                hardenelf_size=candidate_size,
                 saved_addrs_size=saved_addrs_size,
             )
             binary = parse_elf(expanded_path)
@@ -317,14 +322,14 @@ def _resolve_shadow_size(
                 crash_message=crash_message,
                 trap_decision=trap_decision,
                 trap_fallback_callback=trap_fallback_callback,
-                enforce_shadow_limit=False,
+                enforce_hardenelf_limit=False,
             )
-            needed_size = _round_up_to_page(plan.required_shadow_size)
+            needed_size = _round_up_to_page(plan.required_hardenelf_size)
             if needed_size == candidate_size:
                 return needed_size
             candidate_size = needed_size
 
-    raise ValueError("automatic .shadow sizing did not converge")
+    raise ValueError("automatic .hardenelf sizing did not converge")
 
 
 def _build_shadow_stack_plan(
@@ -336,14 +341,14 @@ def _build_shadow_stack_plan(
     crash_message: bytes | None,
     trap_decision: TrapFallbackDecision,
     trap_fallback_callback: Callable[[str, int, str], bool] | None,
-    enforce_shadow_limit: bool,
+    enforce_hardenelf_limit: bool,
 ) -> _ShadowStackPlan:
     is_pie = is_pie_binary(binary)
     allow_absolute_saved_addrs = not is_pie
-    shadow = require_section(binary, SHADOW_SECTION)
+    hardenelf = require_section(binary, HARDENELF_SECTION)
     saved_addrs = require_section(binary, SAVED_ADDRS_SECTION)
-    shadow_cursor = shadow.virtual_address
-    shadow_end = shadow.virtual_address + shadow.size
+    hardenelf_cursor = hardenelf.virtual_address
+    hardenelf_end = hardenelf.virtual_address + hardenelf.size
     patches: list[_PlannedFunctionPatch] = []
     trap_entries: list[_TrapEntry] = []
     skipped: list[SkippedFunction] = []
@@ -383,7 +388,7 @@ def _build_shadow_stack_plan(
                 return_sites,
             )
 
-            entry_body_address = shadow_cursor
+            entry_body_address = hardenelf_cursor
             entry_body = _build_entry_body(
                 assembler=assembler,
                 instructions=entry_instructions,
@@ -394,22 +399,22 @@ def _build_shadow_stack_plan(
                 return_sites=return_sites,
             )
             return_bodies: list[_ReturnBody] = []
-            next_shadow_cursor = entry_body_address + len(entry_body)
+            next_hardenelf_cursor = entry_body_address + len(entry_body)
 
             for return_site in return_sites:
                 donor_trampoline_address = None
                 donor_body = None
                 if return_site.donor is not None:
-                    donor_trampoline_address = next_shadow_cursor
+                    donor_trampoline_address = next_hardenelf_cursor
                     donor_body = build_donor_trampoline(
                         assembler=assembler,
                         donor=return_site.donor,
                         trampoline_address=donor_trampoline_address,
                     )
                     donor_body = pad_to_alignment(donor_body)
-                    next_shadow_cursor += len(donor_body)
+                    next_hardenelf_cursor += len(donor_body)
 
-                return_body_address = next_shadow_cursor
+                return_body_address = next_hardenelf_cursor
                 return_body = build_return_trampoline(
                     assembler=assembler,
                     return_site=return_site,
@@ -420,7 +425,7 @@ def _build_shadow_stack_plan(
                     allow_absolute_saved_addrs=allow_absolute_saved_addrs,
                 )
                 return_body = pad_to_alignment(return_body)
-                next_shadow_cursor += len(return_body)
+                next_hardenelf_cursor += len(return_body)
                 return_bodies.append(
                     _ReturnBody(
                         site=return_site,
@@ -431,12 +436,12 @@ def _build_shadow_stack_plan(
                     )
                 )
 
-            if enforce_shadow_limit and next_shadow_cursor > shadow_end:
+            if enforce_hardenelf_limit and next_hardenelf_cursor > hardenelf_end:
                 skipped.append(
                     SkippedFunction(
                         function.name,
                         function.address,
-                        "not enough room left in .shadow",
+                        "not enough room left in .hardenelf",
                     )
                 )
                 continue
@@ -459,14 +464,14 @@ def _build_shadow_stack_plan(
                 for return_body in return_bodies
                 if return_body.site.strategy is ReturnPatchStrategy.TRAP
             )
-            shadow_cursor = next_shadow_cursor
+            hardenelf_cursor = next_hardenelf_cursor
         except SkipFunction as exc:
             skipped.append(SkippedFunction(function.name, function.address, str(exc)))
 
     trap_installer_address = None
     trap_installer_body = None
     if trap_entries:
-        trap_installer_address = shadow_cursor
+        trap_installer_address = hardenelf_cursor
         trap_installer_body = _build_trap_installer(
             assembler,
             installer_address=trap_installer_address,
@@ -474,26 +479,29 @@ def _build_shadow_stack_plan(
             trap_entries=trap_entries,
         )
         trap_installer_body = pad_to_alignment(trap_installer_body)
-        shadow_cursor += len(trap_installer_body)
-        if enforce_shadow_limit and shadow_cursor > shadow_end:
-            raise ValueError("not enough room left in .shadow for SIGTRAP handler")
+        hardenelf_cursor += len(trap_installer_body)
+        if enforce_hardenelf_limit and hardenelf_cursor > hardenelf_end:
+            raise ValueError("not enough room left in .hardenelf for SIGTRAP handler")
 
     return _ShadowStackPlan(
         patches=tuple(patches),
         skipped=tuple(skipped),
         trap_installer_address=trap_installer_address,
         trap_installer_body=trap_installer_body,
-        required_shadow_size=shadow_cursor - shadow.virtual_address,
+        required_hardenelf_size=hardenelf_cursor - hardenelf.virtual_address,
     )
 
 
 def _round_up_to_page(size: int) -> int:
-    size = max(size, SHADOW_SIZE_PAGE)
-    return ((size + SHADOW_SIZE_PAGE - 1) // SHADOW_SIZE_PAGE) * SHADOW_SIZE_PAGE
+    size = max(size, HARDENELF_SIZE_PAGE)
+    return (
+        (size + HARDENELF_SIZE_PAGE - 1)
+        // HARDENELF_SIZE_PAGE
+    ) * HARDENELF_SIZE_PAGE
 
 
-def _manual_or_default_shadow_size(shadow_size: int | None) -> int:
-    return shadow_size if shadow_size is not None else SHADOW_SIZE_PAGE
+def _manual_or_default_hardenelf_size(hardenelf_size: int | None) -> int:
+    return hardenelf_size if hardenelf_size is not None else HARDENELF_SIZE_PAGE
 
 
 def _normalize_return_address_action(
@@ -602,14 +610,21 @@ def _build_entry_body(
     rbx_jump_target = _rbx_jump_target(return_sites, trampoline_address)
 
     for _ in range(3):
+        before_relocated = (
+            lambda block_address, target=rbx_jump_target: _build_shadow_entry_block(
+                assembler=assembler,
+                block_address=block_address,
+                saved_addrs_address=saved_addrs_address,
+                allow_absolute_saved_addrs=allow_absolute_saved_addrs,
+                rbx_jump_target=target,
+            ),
+        )
         body = build_entry_trampoline(
             assembler=assembler,
             instructions=instructions,
             trampoline_address=trampoline_address,
             return_address=return_address,
-            saved_addrs_address=saved_addrs_address,
-            allow_absolute_saved_addrs=allow_absolute_saved_addrs,
-            rbx_jump_target=rbx_jump_target,
+            before_relocated=before_relocated,
         )
         body = pad_to_alignment(body)
         next_rbx_jump_target = _rbx_jump_target(
@@ -621,6 +636,70 @@ def _build_entry_body(
         rbx_jump_target = next_rbx_jump_target
 
     raise SkipFunction("could not stabilize RBX return trampoline address")
+
+
+def _build_shadow_entry_block(
+    *,
+    assembler: Any,
+    block_address: int,
+    saved_addrs_address: int,
+    allow_absolute_saved_addrs: bool,
+    rbx_jump_target: int | None,
+) -> bytes:
+    register_save = assemble(
+        assembler,
+        """
+            pushfq
+            push rax
+            push r10
+            push r11
+        """,
+        block_address,
+    )
+    saved_addrs_load_address = block_address + len(register_save)
+    saved_addrs_load = load_r11_with_address(
+        assembler,
+        saved_addrs_load_address,
+        saved_addrs_address,
+        allow_absolute=allow_absolute_saved_addrs,
+    )
+    tail_address = saved_addrs_load_address + len(saved_addrs_load)
+    record_size = 16 if rbx_jump_target is not None else 8
+    save_rbx = (
+        "mov qword ptr [r10 + 8], rbx" if rbx_jump_target is not None else ""
+    )
+    tail = assemble(
+        assembler,
+        f"""
+            mov r10, qword ptr [r11]
+            test r10, r10
+            jne cursor_ready
+            lea r10, qword ptr [r11 + 8]
+        cursor_ready:
+            mov rax, qword ptr [rsp + 32]
+            mov qword ptr [r10], rax
+            {save_rbx}
+            add r10, {record_size}
+            mov qword ptr [r11], r10
+            pop r11
+            pop r10
+            pop rax
+            popfq
+        """,
+        tail_address,
+    )
+    block = register_save + saved_addrs_load + tail
+    if rbx_jump_target is None:
+        return block
+
+    rbx_load_address = block_address + len(block)
+    return block + load_register_with_address(
+        assembler,
+        "rbx",
+        rbx_load_address,
+        rbx_jump_target,
+        allow_absolute=allow_absolute_saved_addrs,
+    )
 
 
 def _rbx_jump_target(
@@ -641,8 +720,11 @@ def _patch_entry(
     overwritten_size: int,
     trampolines: list[EntryTrampoline],
 ) -> None:
-    entry_patch = make_jump(function.address, trampoline_address)
-    entry_patch += b"\x90" * (overwritten_size - NEAR_JUMP_SIZE)
+    entry_patch = make_entry_patch(
+        function_address=function.address,
+        trampoline_address=trampoline_address,
+        overwritten_size=overwritten_size,
+    )
 
     binary.patch_address(trampoline_address, list(body))
     binary.patch_address(function.address, list(entry_patch))

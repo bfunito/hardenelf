@@ -3,7 +3,6 @@
 from .step import (
     INITIALIZE_FRAMES_DESCRIPTION,
     INITIALIZE_FRAMES_STEP,
-    INIT_FRAMES_SECTION,
     FrameInitializationResult,
     InitializeFramesStepOptions,
     InitializedFrame,
@@ -14,7 +13,6 @@ from .step import (
 __all__ = [
     "INITIALIZE_FRAMES_DESCRIPTION",
     "INITIALIZE_FRAMES_STEP",
-    "INIT_FRAMES_SECTION",
     "FrameInitializationResult",
     "InitializeFramesStepOptions",
     "InitializedFrame",

@@ -1,4 +1,4 @@
-"""ELF expansion primitives for shadow-stack injection."""
+"""ELF expansion primitives for hardening trampolines."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 import lief
 
+from binary_hardening.hardenelf import HARDENELF_SECTION
 from binary_hardening.elf import (
     ensure_section_absent,
     make_section,
@@ -17,7 +18,6 @@ from binary_hardening.elf import (
 )
 
 
-SHADOW_SECTION = ".shadow"
 SAVED_ADDRS_SECTION = ".saved_addrs"
 
 
@@ -37,7 +37,7 @@ class ExpansionResult:
     """Summary returned after expanding an ELF binary."""
 
     output_path: Path
-    shadow: AddedSection
+    hardenelf: AddedSection
     saved_addrs: AddedSection
 
 
@@ -45,29 +45,29 @@ def expand_binary(
     input_path: Path | str,
     output_path: Path | str,
     *,
-    shadow_size: int = 0x1000,
+    hardenelf_size: int = 0x1000,
     saved_addrs_size: int = 0x1000,
 ) -> ExpansionResult:
     """Add the sections needed by later trampoline-injection steps.
 
     The added sections are loaded into memory:
-    - ``.shadow`` is executable space for future trampoline bodies.
+    - ``.hardenelf`` is executable space for trampoline bodies.
     - ``.saved_addrs`` is writable storage for return addresses.
     """
 
     input_file = Path(input_path)
     output_file = Path(output_path)
-    validate_positive_size("shadow_size", shadow_size)
+    validate_positive_size("hardenelf_size", hardenelf_size)
     validate_positive_size("saved_addrs_size", saved_addrs_size)
 
     binary = parse_elf(input_file)
 
-    ensure_section_absent(binary, SHADOW_SECTION)
+    ensure_section_absent(binary, HARDENELF_SECTION)
     ensure_section_absent(binary, SAVED_ADDRS_SECTION)
 
-    shadow = make_section(
-        name=SHADOW_SECTION,
-        size=shadow_size,
+    hardenelf = make_section(
+        name=HARDENELF_SECTION,
+        size=hardenelf_size,
         flags=lief.ELF.Section.FLAGS.ALLOC | lief.ELF.Section.FLAGS.EXECINSTR,
         fill=0x90,
     )
@@ -78,7 +78,7 @@ def expand_binary(
         fill=0x00,
     )
 
-    binary.add(shadow, loaded=True)
+    binary.add(hardenelf, loaded=True)
     binary.add(saved_addrs, loaded=True)
 
     write_elf(binary, output_file, mode_source=input_file)
@@ -86,7 +86,7 @@ def expand_binary(
 
     return ExpansionResult(
         output_path=output_file,
-        shadow=section_summary(require_section(rewritten, SHADOW_SECTION)),
+        hardenelf=section_summary(require_section(rewritten, HARDENELF_SECTION)),
         saved_addrs=section_summary(require_section(rewritten, SAVED_ADDRS_SECTION)),
     )
 

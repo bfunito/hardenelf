@@ -3,11 +3,11 @@ from io import StringIO
 from pathlib import Path
 import unittest
 
-from binary_hardening.cli import _make_parser, _parse_shadow_size, _print_step_result
+from binary_hardening.cli import _make_parser, _parse_hardenelf_size, _print_step_result
 from initialize_frames.step import FrameInitializationResult, SkippedFrame
-from shstk_injector.entry_trampoline import EntryTrampoline
+from binary_hardening.entry_trampoline import EntryTrampoline
 from shstk_injector.expand import AddedSection
-from shstk_injector.return_trampoline import ReturnTrampoline
+from binary_hardening.exit_trampoline import ReturnTrampoline
 from shstk_injector.steps.shadow_stack import InjectionResult, SkippedFunction
 
 
@@ -38,7 +38,7 @@ class CliOutputTests(unittest.TestCase):
         )
 
         self.assertEqual(args.steps, ["shadow-stack"])
-        self.assertIsNone(args.shadow_size)
+        self.assertIsNone(args.hardenelf_size)
         self.assertEqual(args.saved_addrs_size, 0x2000)
         self.assertEqual(args.fmtstr_trampoline_size, 0x3000)
         self.assertEqual(args.init_frame_trampoline_size, 0x5000)
@@ -47,13 +47,13 @@ class CliOutputTests(unittest.TestCase):
         self.assertEqual(args.crash_message, "boom")
         self.assertEqual(args.trap_fallback, "skip")
 
-    def test_parser_keeps_legacy_long_options_hidden(self) -> None:
+    def test_parser_keeps_long_options_hidden(self) -> None:
         parser = _make_parser()
         args = parser.parse_args(
             [
                 "--step",
                 "shadow-stack",
-                "--shadow-size",
+                "--hardenelf-size",
                 "0x2000",
                 "--saved-addrs-size",
                 "0x3000",
@@ -75,7 +75,7 @@ class CliOutputTests(unittest.TestCase):
         help_text = parser.format_help()
 
         self.assertEqual(args.steps, ["shadow-stack"])
-        self.assertEqual(args.shadow_size, 0x2000)
+        self.assertEqual(args.hardenelf_size, 0x2000)
         self.assertEqual(args.saved_addrs_size, 0x3000)
         self.assertEqual(args.fmtstr_trampoline_size, 0x4000)
         self.assertEqual(args.init_frame_trampoline_size, 0x5000)
@@ -88,11 +88,11 @@ class CliOutputTests(unittest.TestCase):
         self.assertNotIn("--return-address-action", help_text)
         self.assertNotIn("--fmtstr-trampoline-size", help_text)
 
-    def test_shadow_size_parser_accepts_auto(self) -> None:
-        self.assertIsNone(_parse_shadow_size("auto"))
+    def test_hardenelf_size_parser_accepts_auto(self) -> None:
+        self.assertIsNone(_parse_hardenelf_size("auto"))
 
-    def test_shadow_size_parser_accepts_integer(self) -> None:
-        self.assertEqual(_parse_shadow_size("0x2000"), 0x2000)
+    def test_hardenelf_size_parser_accepts_integer(self) -> None:
+        self.assertEqual(_parse_hardenelf_size("0x2000"), 0x2000)
 
     def test_parser_accepts_auto_trampoline_sizes(self) -> None:
         args = _make_parser().parse_args(
@@ -116,7 +116,7 @@ class CliOutputTests(unittest.TestCase):
     def test_shadow_stack_result_prints_skipped_function_details(self) -> None:
         result = InjectionResult(
             output_path=Path("patched"),
-            shadow=AddedSection(".shadow", 0x500000, 0x1000, 0x100, ("ALLOC",)),
+            hardenelf=AddedSection(".hardenelf", 0x500000, 0x1000, 0x100, ("ALLOC",)),
             saved_addrs=AddedSection(".saved_addrs", 0x501000, 0x2000, 0x100, ("WRITE",)),
             trampolines=(
                 EntryTrampoline("patched_fn", 0x401000, 0x500000, 5, b"\x90" * 5),

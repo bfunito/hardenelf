@@ -6,10 +6,10 @@ import lief
 
 from initialize_frames.step import (
     INITIALIZE_FRAMES_STEP,
-    INIT_FRAMES_SECTION,
     FrameInitializationResult,
     initialize_stack_frames,
 )
+from binary_hardening.hardenelf import HARDENELF_SECTION
 from tests.fixture_binaries import (
     BIN_DIR,
     build_fixtures,
@@ -38,8 +38,8 @@ class InitializeFramesTests(unittest.TestCase):
         rewritten = lief.parse(output_path)
         self.assertIsInstance(rewritten, lief.ELF.Binary)
         assert isinstance(rewritten, lief.ELF.Binary)
-        self.assertTrue(rewritten.has_section(INIT_FRAMES_SECTION))
-        section = rewritten.get_section(INIT_FRAMES_SECTION)
+        self.assertTrue(rewritten.has_section(HARDENELF_SECTION))
+        section = rewritten.get_section(HARDENELF_SECTION)
         self.assertIsNotNone(section)
         assert section is not None
         self.assertEqual(section.size % 0x1000, 0)
@@ -72,7 +72,7 @@ class InitializeFramesTests(unittest.TestCase):
             rewritten = lief.parse(output_path)
             self.assertIsInstance(rewritten, lief.ELF.Binary)
             assert isinstance(rewritten, lief.ELF.Binary)
-            self.assertFalse(rewritten.has_section(INIT_FRAMES_SECTION))
+            self.assertFalse(rewritten.has_section(HARDENELF_SECTION))
 
     def test_trampoline_size_must_be_positive(self) -> None:
         build_fixtures(self)

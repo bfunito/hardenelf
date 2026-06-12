@@ -18,6 +18,12 @@ from binary_hardening.elf import (
     validate_positive_size,
     write_elf,
 )
+from binary_hardening.entry_trampoline import (
+    build_entry_trampoline,
+    collect_entry_instructions,
+    make_entry_patch,
+)
+from binary_hardening.hardenelf import HARDENELF_SECTION
 from binary_hardening.x86 import (
     SkipFunction,
     ensure_x86_64,
@@ -30,19 +36,13 @@ from initialize_frames.analysis import (
     collect_initialization_site,
     iter_function_symbols,
 )
-from initialize_frames.trampoline import (
-    build_frame_initializer_trampoline,
-    make_patch_jump,
-)
+from initialize_frames.trampoline import build_frame_initializer_payload
 
 
 INITIALIZE_FRAMES_STEP = "initialize-frames"
 INITIALIZE_FRAMES_DESCRIPTION = (
     "Zero stack-frame storage after each function's frame setup."
 )
-INIT_FRAMES_SECTION = ".init_frames"
-
-
 @dataclass(frozen=True)
 class InitializedFrame:
     """One function patched to zero its stack frame after setup."""
@@ -80,6 +80,7 @@ class FrameInitializationResult:
 @dataclass(frozen=True)
 class _PlannedFrameInitialization:
     site: FrameInitializationSite
+    entry_instructions: tuple[object, ...]
     trampoline_address: int
     body: bytes
     patch_jump: bytes
@@ -114,7 +115,7 @@ def initialize_stack_frames(
 
     binary = parse_elf(input_file)
     ensure_x86_64(binary)
-    ensure_section_absent(binary, INIT_FRAMES_SECTION)
+    ensure_section_absent(binary, HARDENELF_SECTION)
 
     disassembler = make_disassembler()
     assembler = make_assembler()
@@ -126,7 +127,7 @@ def initialize_stack_frames(
             output_path=output_file,
             initialized_frames=(),
             skipped=tuple(skipped),
-            section_name=INIT_FRAMES_SECTION,
+            section_name=HARDENELF_SECTION,
             section_address=None,
             section_size=0,
         )
@@ -138,7 +139,7 @@ def initialize_stack_frames(
         assembler=assembler,
     )
     section = make_section(
-        name=INIT_FRAMES_SECTION,
+        name=HARDENELF_SECTION,
         size=resolved_trampoline_size,
         flags=lief.ELF.Section.FLAGS.ALLOC | lief.ELF.Section.FLAGS.EXECINSTR,
         fill=0x90,
@@ -149,12 +150,14 @@ def initialize_stack_frames(
 
     binary = parse_elf(output_file)
     ensure_x86_64(binary)
-    section = require_section(binary, INIT_FRAMES_SECTION)
+    section = require_section(binary, HARDENELF_SECTION)
     sites, skipped = _collect_sites(binary, disassembler)
 
     plan = _build_frame_initialization_plan(
+        binary,
         sites,
         skipped=skipped,
+        disassembler=disassembler,
         assembler=assembler,
         section=section,
         enforce_trampoline_limit=True,
@@ -162,9 +165,13 @@ def initialize_stack_frames(
     initialized_frames: list[InitializedFrame] = []
     for patch in plan.patches:
         binary.patch_address(patch.trampoline_address, list(patch.body))
-        binary.patch_address(patch.site.patch_address, list(patch.patch_jump))
+        binary.patch_address(patch.site.function.address, list(patch.patch_jump))
         initialized_frames.append(
-            _initialized_frame_summary(patch.site, patch.trampoline_address)
+            _initialized_frame_summary(
+                patch.site,
+                patch.entry_instructions,
+                patch.trampoline_address,
+            )
         )
 
     if not initialized_frames:
@@ -172,13 +179,13 @@ def initialize_stack_frames(
 
     write_elf(binary, output_file, mode_source=input_file)
     rewritten = parse_elf(output_file)
-    section = require_section(rewritten, INIT_FRAMES_SECTION)
+    section = require_section(rewritten, HARDENELF_SECTION)
 
     return FrameInitializationResult(
         output_path=output_file,
         initialized_frames=tuple(initialized_frames),
         skipped=plan.skipped,
-        section_name=INIT_FRAMES_SECTION,
+        section_name=HARDENELF_SECTION,
         section_address=section.virtual_address,
         section_size=section.size,
     )
@@ -200,15 +207,15 @@ def _resolve_trampoline_size(
         tmpdir_path = Path(tmpdir)
         for _ in range(8):
             if candidate_size in seen_sizes:
-                raise ValueError("automatic .init_frames sizing did not converge")
+                raise ValueError("automatic .hardenelf sizing did not converge")
             seen_sizes.add(candidate_size)
 
             output_file = tmpdir_path / f"init-frames-auto-{candidate_size:x}"
             binary = parse_elf(input_file)
             ensure_x86_64(binary)
-            ensure_section_absent(binary, INIT_FRAMES_SECTION)
+            ensure_section_absent(binary, HARDENELF_SECTION)
             section = make_section(
-                name=INIT_FRAMES_SECTION,
+                name=HARDENELF_SECTION,
                 size=candidate_size,
                 flags=lief.ELF.Section.FLAGS.ALLOC | lief.ELF.Section.FLAGS.EXECINSTR,
                 fill=0x90,
@@ -218,11 +225,13 @@ def _resolve_trampoline_size(
 
             binary = parse_elf(output_file)
             ensure_x86_64(binary)
-            section = require_section(binary, INIT_FRAMES_SECTION)
+            section = require_section(binary, HARDENELF_SECTION)
             sites, skipped = _collect_sites(binary, disassembler)
             plan = _build_frame_initialization_plan(
+                binary,
                 sites,
                 skipped=skipped,
+                disassembler=disassembler,
                 assembler=assembler,
                 section=section,
                 enforce_trampoline_limit=False,
@@ -232,13 +241,15 @@ def _resolve_trampoline_size(
                 return needed_size
             candidate_size = needed_size
 
-    raise ValueError("automatic .init_frames sizing did not converge")
+    raise ValueError("automatic .hardenelf sizing did not converge")
 
 
 def _build_frame_initialization_plan(
+    binary: lief.ELF.Binary,
     sites: list[FrameInitializationSite],
     *,
     skipped: list[SkippedFrame],
+    disassembler: object,
     assembler: object,
     section: lief.ELF.Section,
     enforce_trampoline_limit: bool,
@@ -250,10 +261,31 @@ def _build_frame_initialization_plan(
 
     for site in sites:
         try:
-            body = build_frame_initializer_trampoline(
+            entry_instructions = tuple(
+                collect_entry_instructions(
+                    binary,
+                    disassembler,
+                    site.function,
+                    min_size=site.prologue_size,
+                )
+            )
+            overwritten_size = sum(
+                instruction.size for instruction in entry_instructions
+            )
+            body = build_entry_trampoline(
                 assembler=assembler,
-                site=site,
+                instructions=list(entry_instructions),
                 trampoline_address=cursor,
+                return_address=site.function.address + overwritten_size,
+                after_relocated=(
+                    lambda block_address, current_site=site: (
+                        build_frame_initializer_payload(
+                            assembler=assembler,
+                            site=current_site,
+                            block_address=block_address,
+                        )
+                    ),
+                ),
             )
             body = pad_to_alignment(body)
             next_cursor = cursor + len(body)
@@ -262,7 +294,7 @@ def _build_frame_initialization_plan(
                     SkippedFrame(
                         site.function.name,
                         site.function.address,
-                        f"not enough room left in {INIT_FRAMES_SECTION}",
+                        f"not enough room left in {HARDENELF_SECTION}",
                     )
                 )
                 continue
@@ -270,9 +302,14 @@ def _build_frame_initialization_plan(
             patches.append(
                 _PlannedFrameInitialization(
                     site=site,
+                    entry_instructions=entry_instructions,
                     trampoline_address=cursor,
                     body=body,
-                    patch_jump=make_patch_jump(site, cursor),
+                    patch_jump=make_entry_patch(
+                        function_address=site.function.address,
+                        trampoline_address=cursor,
+                        overwritten_size=overwritten_size,
+                    ),
                 )
             )
             cursor = next_cursor
@@ -306,23 +343,25 @@ def _collect_sites(
 
 def _initialized_frame_summary(
     site: FrameInitializationSite,
+    entry_instructions: tuple[object, ...],
     trampoline_address: int,
 ) -> InitializedFrame:
     return InitializedFrame(
         function_name=site.function.name,
         function_address=site.function.address,
-        patch_address=site.patch_address,
+        patch_address=site.function.address,
         trampoline_address=trampoline_address,
         frame_size=site.frame_size,
-        overwritten_size=site.overwritten_size,
-        original_bytes=site.original_bytes,
+        overwritten_size=sum(instruction.size for instruction in entry_instructions),
+        original_bytes=b"".join(
+            bytes(instruction.bytes) for instruction in entry_instructions
+        ),
     )
 
 
 __all__ = [
     "INITIALIZE_FRAMES_DESCRIPTION",
     "INITIALIZE_FRAMES_STEP",
-    "INIT_FRAMES_SECTION",
     "FrameInitializationResult",
     "InitializeFramesStepOptions",
     "InitializedFrame",

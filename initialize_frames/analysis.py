@@ -11,7 +11,6 @@ from binary_hardening.symbols import FunctionSymbol, iter_function_symbols
 from binary_hardening.x86 import (
     NEAR_JUMP_SIZE,
     SkipFunction,
-    ensure_relocatable_instruction,
     function_code_limit,
     ranges_overlap,
 )
@@ -19,46 +18,36 @@ from binary_hardening.x86 import (
 
 @dataclass(frozen=True)
 class FrameInitializationSite:
-    """Patch plan for zeroing one function's stack frame."""
+    """Frame metadata needed by an entry-trampoline payload."""
 
     function: FunctionSymbol
     frame_size: int
-    patch_address: int
-    overwritten_instructions: tuple[Any, ...]
-
-    @property
-    def overwritten_size(self) -> int:
-        return sum(instruction.size for instruction in self.overwritten_instructions)
-
-    @property
-    def original_bytes(self) -> bytes:
-        return b"".join(
-            bytes(instruction.bytes) for instruction in self.overwritten_instructions
-        )
+    prologue_size: int
 
 def collect_initialization_site(
     binary: lief.ELF.Binary,
     disassembler: Any,
     function: FunctionSymbol,
 ) -> FrameInitializationSite:
-    """Find the post-prologue patch point for a conventional stack frame."""
+    """Find a conventional frame setup and its byte length."""
 
     instructions = _disassemble_function(binary, disassembler, function)
     prologue_end_index, frame_size = _find_frame_prologue(instructions)
-    patch_instructions = _collect_patch_instructions(instructions, prologue_end_index)
-    patch_address = patch_instructions[0].address
-
+    prologue_size = (
+        instructions[prologue_end_index - 1].address
+        + instructions[prologue_end_index - 1].size
+        - function.address
+    )
     _ensure_patch_range_has_no_internal_branch_target(
         instructions,
-        patch_address,
-        sum(instruction.size for instruction in patch_instructions),
+        function.address,
+        prologue_size,
     )
 
     return FrameInitializationSite(
         function=function,
         frame_size=frame_size,
-        patch_address=patch_address,
-        overwritten_instructions=tuple(patch_instructions),
+        prologue_size=prologue_size,
     )
 
 
@@ -102,23 +91,6 @@ def _find_frame_prologue(instructions: list[Any]) -> tuple[int, int]:
         raise SkipFunction("stack frame allocation is empty")
     index += 1
     return index, frame_size
-
-
-def _collect_patch_instructions(
-    instructions: list[Any],
-    start_index: int,
-) -> list[Any]:
-    selected: list[Any] = []
-    total_size = 0
-
-    for instruction in instructions[start_index:]:
-        ensure_relocatable_instruction(instruction, "frame-initializer")
-        selected.append(instruction)
-        total_size += instruction.size
-        if total_size >= NEAR_JUMP_SIZE:
-            return selected
-
-    raise SkipFunction("could not collect enough post-prologue bytes")
 
 
 def _ensure_patch_range_has_no_internal_branch_target(

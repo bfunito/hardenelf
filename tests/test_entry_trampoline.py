@@ -24,8 +24,8 @@ class EntryTrampolineTests(unittest.TestCase):
 
         result = inject_trampolines(input_path, output_path)
 
-        self.assertEqual(result.shadow.size % 0x1000, 0)
-        self.assertGreaterEqual(result.shadow.size, 0x1000)
+        self.assertEqual(result.hardenelf.size % 0x1000, 0)
+        self.assertGreaterEqual(result.hardenelf.size, 0x1000)
         self.assertEqual(run_binary(output_path).returncode, 0)
 
     def test_patched_binary_preserves_function_behavior(self) -> None:
