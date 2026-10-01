@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+import capstone
+from capstone import x86_const as x86
 import lief
 
 from binary_hardening.relocation import relocate_instruction
@@ -84,10 +86,15 @@ class ReturnSite:
     strategy: ReturnPatchStrategy = ReturnPatchStrategy.NEAR_JUMP
     bridge_address: int | None = None
     donor: DonorPatch | None = None
+    tail_target: int | None = None
+
+    @property
+    def is_tail_call(self) -> bool:
+        return not is_return_instruction(self.ret_instruction)
 
     @property
     def patch_address(self) -> int:
-        if self.strategy is ReturnPatchStrategy.TRAP:
+        if self.strategy is ReturnPatchStrategy.TRAP or self.is_tail_call:
             return self.ret_instruction.address
         return self.instructions[0].address
 
@@ -95,6 +102,8 @@ class ReturnSite:
     def overwritten_size(self) -> int:
         if self.strategy is ReturnPatchStrategy.TRAP:
             return 1
+        if self.is_tail_call:
+            return self.ret_instruction.size
         instruction_size = sum(instruction.size for instruction in self.instructions)
         return instruction_size + self.ret_instruction.size
 
@@ -102,6 +111,8 @@ class ReturnSite:
     def original_bytes(self) -> bytes:
         if self.strategy is ReturnPatchStrategy.TRAP:
             return bytes(self.ret_instruction.bytes[:1])
+        if self.is_tail_call:
+            return bytes(self.ret_instruction.bytes)
         body = b"".join(bytes(instruction.bytes) for instruction in self.instructions)
         return body + bytes(self.ret_instruction.bytes)
 
@@ -144,7 +155,8 @@ def collect_return_sites(
         for index, instruction in enumerate(instructions)
         if is_return_instruction(instruction)
     ]
-    if not ret_indexes:
+    tail_sites = _collect_tail_sites(binary, function, instructions)
+    if not ret_indexes and not tail_sites:
         raise SkipFunction("function has no return instruction")
 
     try:
@@ -154,8 +166,12 @@ def collect_return_sites(
         ]
         _ensure_non_overlapping_return_sites(return_sites)
         _ensure_return_patches_are_not_branch_targets(instructions, return_sites)
-        return return_sites
+        return return_sites + tail_sites
     except SkipFunction as near_jump_error:
+        if tail_sites:
+            if allow_trap_fallback:
+                return collect_trap_return_sites(instructions, ret_indexes) + tail_sites
+            raise TrapFallbackCandidate(str(near_jump_error)) from near_jump_error
         rbx_sites = _collect_rbx_return_sites(instructions, ret_indexes)
         if rbx_sites is not None:
             return rbx_sites
@@ -200,16 +216,22 @@ def build_return_trampoline(
     crash_message: bytes | None = None,
     allow_absolute_saved_addrs: bool = True,
 ) -> bytes:
+    preserve = b""
+    stack_offset = 0
+    if return_site.is_tail_call:
+        preserve = assemble(assembler, "pushfq; push r10; push r11", trampoline_address)
+        stack_offset = 24
+
     relocated = bytearray()
     for instruction in return_site.instructions:
         relocated_instruction = relocate_instruction(
             assembler,
             instruction,
-            trampoline_address + len(relocated),
+            trampoline_address + len(preserve) + len(relocated),
         )
         relocated.extend(relocated_instruction)
 
-    check_address = trampoline_address + len(relocated)
+    check_address = trampoline_address + len(preserve) + len(relocated)
     if action is ReturnAddressAction.RESTORE:
         check = _build_restore_block(
             assembler,
@@ -217,6 +239,7 @@ def build_return_trampoline(
             saved_addrs_address,
             allow_absolute_saved_addrs=allow_absolute_saved_addrs,
             restore_rbx=return_site.strategy is ReturnPatchStrategy.RBX_JUMP,
+            stack_offset=stack_offset,
         )
     elif action is ReturnAddressAction.COMPARE_CRASH:
         check = _build_compare_crash_block(
@@ -226,11 +249,26 @@ def build_return_trampoline(
             crash_message,
             allow_absolute_saved_addrs=allow_absolute_saved_addrs,
             restore_rbx=return_site.strategy is ReturnPatchStrategy.RBX_JUMP,
+            stack_offset=stack_offset,
         )
     else:
         raise ValueError(f"unsupported return address action: {action}")
 
-    return bytes(relocated) + check + bytes(return_site.ret_instruction.bytes)
+    if not return_site.is_tail_call:
+        return bytes(relocated) + check + bytes(return_site.ret_instruction.bytes)
+
+    suffix = assemble(
+        assembler,
+        "pop r11; pop r10; popfq",
+        check_address + len(check),
+    )
+    jump_address = check_address + len(check) + len(suffix)
+    jump = (
+        make_jump(jump_address, return_site.tail_target)
+        if return_site.tail_target is not None
+        else relocate_instruction(assembler, return_site.ret_instruction, jump_address)
+    )
+    return preserve + check + suffix + jump
 
 
 def build_donor_trampoline(
@@ -262,6 +300,7 @@ def _build_restore_block(
     *,
     allow_absolute_saved_addrs: bool,
     restore_rbx: bool = False,
+    stack_offset: int = 0,
 ) -> bytes:
     saved_addrs_load = load_r11_with_address(
         assembler,
@@ -280,7 +319,7 @@ def _build_restore_block(
             mov qword ptr [r11], r10
             mov r11, qword ptr [r10]
             {rbx_restore}
-            mov qword ptr [rsp], r11
+            mov qword ptr [rsp + {stack_offset}], r11
         """,
         tail_address,
     )
@@ -295,6 +334,7 @@ def _build_compare_crash_block(
     *,
     allow_absolute_saved_addrs: bool,
     restore_rbx: bool = False,
+    stack_offset: int = 0,
 ) -> bytes:
     message_block = ""
     if crash_message:
@@ -329,7 +369,7 @@ def _build_compare_crash_block(
             sub r10, {record_size}
             mov qword ptr [r11], r10
             mov r11, qword ptr [r10]
-            cmp qword ptr [rsp], r11
+            cmp qword ptr [rsp + {stack_offset}], r11
             je return_address_ok
             {message_block}
             ud2
@@ -618,8 +658,6 @@ def _has_internal_branch_target(
 
 
 def _function_mentions_rbx(instructions: list[Any]) -> bool:
-    import capstone.x86_const as x86
-
     rbx_registers = {
         x86.X86_REG_RBX,
         x86.X86_REG_EBX,
@@ -666,9 +704,6 @@ def _ensure_return_patches_are_not_branch_targets(
 
 
 def _direct_branch_target(instruction: Any) -> int | None:
-    import capstone
-    import capstone.x86_const as x86
-
     if not instruction.group(capstone.CS_GRP_JUMP):
         return None
     if len(instruction.operands) != 1:
@@ -678,3 +713,123 @@ def _direct_branch_target(instruction: Any) -> int | None:
     if operand.type != x86.X86_OP_IMM:
         return None
     return int(operand.imm)
+
+
+def _collect_tail_sites(
+    binary: lief.ELF.Binary,
+    function: Any,
+    instructions: list[Any],
+) -> list[ReturnSite]:
+    function_types = (lief.ELF.Symbol.TYPE.FUNC, lief.ELF.Symbol.TYPE.GNU_IFUNC)
+    callable_targets = {
+        int(symbol.value)
+        for symbol in binary.symbols
+        if symbol.value and symbol.type in function_types
+    }
+    relocations = {
+        int(relocation.address): relocation for relocation in binary.relocations
+    }
+    candidates: list[tuple[int, ReturnSite]] = []
+
+    for index, instruction in enumerate(instructions):
+        if not instruction.group(capstone.CS_GRP_JUMP):
+            continue
+        target = _direct_branch_target(instruction)
+        if (
+            target is not None
+            and function.address <= target < function.address + function.size
+        ):
+            continue
+        if instruction.mnemonic != "jmp":
+            raise SkipFunction("conditional jump leaves the function")
+        if instruction.size < NEAR_JUMP_SIZE:
+            raise SkipFunction("tail jump is too small for a near jump")
+
+        if target is None:
+            operand = instruction.operands[0]
+            if operand.type != x86.X86_OP_MEM or operand.mem.base != x86.X86_REG_RIP:
+                raise SkipFunction("indirect tail-call target is not provable")
+            relocation = relocations.get(
+                instruction.address + instruction.size + operand.mem.disp
+            )
+            if (
+                relocation is None
+                or not relocation.has_symbol
+                or relocation.symbol.type not in function_types
+            ):
+                raise SkipFunction("indirect tail-call target is not a function")
+        elif target not in callable_targets:
+            section = binary.section_from_virtual_address(target)
+            if (
+                section is None
+                or not section.name.startswith(".plt")
+                or not section.entry_size
+                or (target - section.virtual_address) % section.entry_size
+            ):
+                raise SkipFunction("direct tail-call target is not a function")
+
+        candidates.append((index, ReturnSite((), instruction, tail_target=target)))
+
+    if candidates:
+        _prove_tail_stack(instructions, candidates)
+    return [site for _, site in candidates]
+
+
+def _prove_tail_stack(
+    instructions: list[Any],
+    candidates: list[tuple[int, ReturnSite]],
+) -> None:
+    by_address = {
+        instruction.address: index for index, instruction in enumerate(instructions)
+    }
+    offsets, pending = {}, [(0, 0)]
+    while pending:
+        index, offset = pending.pop()
+        if index >= len(instructions):
+            continue
+        if index in offsets:
+            if offsets[index] != offset:
+                raise SkipFunction("rsp state depends on the control-flow path")
+            continue
+        offsets[index] = offset
+        instruction = instructions[index]
+        delta = _rsp_delta(instruction)
+        if not delta and x86.X86_REG_RSP in instruction.regs_access()[1] and not (
+            instruction.group(capstone.CS_GRP_CALL)
+            or instruction.group(capstone.CS_GRP_RET)
+        ):
+            raise SkipFunction("rsp change is not statically understood")
+        offset += delta
+        if instruction.group(capstone.CS_GRP_RET):
+            continue
+        if instruction.group(capstone.CS_GRP_JUMP):
+            target = _direct_branch_target(instruction)
+            if target in by_address:
+                pending.append((by_address[target], offset))
+            if instruction.mnemonic == "jmp":
+                continue
+        pending.append((index + 1, offset))
+
+    if any(offsets.get(index) != 0 for index, _ in candidates):
+        raise SkipFunction("tail call does not restore rsp on every path")
+
+
+def _rsp_delta(instruction: Any) -> int:
+    if instruction.mnemonic.startswith("push"):
+        return -8
+    if instruction.mnemonic.startswith("pop"):
+        if (
+            instruction.operands[0].type == x86.X86_OP_REG
+            and instruction.operands[0].reg == x86.X86_REG_RSP
+        ):
+            return 0
+        return 8
+    if instruction.mnemonic in ("add", "sub") and len(instruction.operands) == 2:
+        destination, amount = instruction.operands
+        if (
+            destination.type == x86.X86_OP_REG
+            and destination.reg == x86.X86_REG_RSP
+            and amount.type == x86.X86_OP_IMM
+        ):
+            return int(amount.imm) * (1 if instruction.mnemonic == "add" else -1)
+    return 0

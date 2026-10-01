@@ -16,6 +16,27 @@ from shstk_injector.steps.shadow_stack import SHADOW_STACK_STEP, TrapFallbackDec
 
 
 class ReturnTrampolineTests(unittest.TestCase):
+    def test_direct_and_got_tail_calls_preserve_behavior(self) -> None:
+        input_path, output_path, pipeline_result = run_pipeline_fixture(
+            self,
+            "tail_call",
+            steps=(SHADOW_STACK_STEP,),
+            return_address_action=ReturnAddressAction.COMPARE_CRASH,
+            crash_message="tail mismatch\n",
+        )
+        result = pipeline_result.result_for_step(SHADOW_STACK_STEP)
+
+        self.assertEqual(run_binary(input_path).returncode, 0)
+        self.assertEqual(run_binary(output_path).returncode, 0)
+        execution = run_binary(output_path, "corrupt")
+        self.assertNotEqual(execution.returncode, 0)
+        self.assertEqual(execution.stderr, "tail mismatch\n")
+        names = {item.function_name for item in result.return_trampolines}
+        self.assertTrue(
+            {"direct_tail_helper", "indirect_tail_helper", "corrupting_tail_helper"}
+            <= names
+        )
+
     def test_patched_binary_restores_corrupted_return_address(self) -> None:
         input_path, output_path = patch_fixture(self, "return_restore")
 

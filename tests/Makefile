@@ -22,6 +22,7 @@ BINARIES := \
 	$(BIN_DIR)/return_restore \
 	$(BIN_DIR)/canary_return \
 	$(BIN_DIR)/short_return_fallback \
+	$(BIN_DIR)/tail_call \
 	$(BIN_DIR)/rip_relative_entry \
 	$(BIN_DIR)/rng_smoke \
 	$(BIN_DIR)/fmtstr_smoke \
@@ -53,6 +54,9 @@ $(BIN_DIR)/canary_return: $(SRC_DIR)/canary_return.c | $(BIN_DIR)
 
 $(BIN_DIR)/short_return_fallback: $(SRC_DIR)/short_return_fallback.c | $(BIN_DIR)
 	$(CC) $(CANARY_CFLAGS) $< -o $@
+
+$(BIN_DIR)/tail_call: $(SRC_DIR)/tail_call.c | $(BIN_DIR)
+	$(CC) $(RETURN_CFLAGS) -Wl,--no-relax $< -o $@
 
 $(BIN_DIR)/rip_relative_entry: $(SRC_DIR)/rip_relative_entry.c | $(BIN_DIR)
 	$(CC) $(COMMON_CFLAGS) $< -o $@

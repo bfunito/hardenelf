@@ -8,6 +8,8 @@ import unittest
 
 import lief
 
+from binary_hardening.x86 import assemble, make_assembler, make_disassembler
+from fmtstr_checker.analysis import _stack_argument_count
 from fmtstr_checker.checkformat import build_checkformat_library
 from fmtstr_checker.step import (
     FMTSTR_CHECKER_STEP,
@@ -172,6 +174,41 @@ class FmtStrCheckerIntegrationTests(unittest.TestCase):
             self.assertIsInstance(rewritten, lief.ELF.Binary)
             assert isinstance(rewritten, lief.ELF.Binary)
             self.assertNotIn("libcheckformat.so", tuple(rewritten.libraries))
+
+
+class FormatCallAnalysisTests(unittest.TestCase):
+    def test_callee_saved_registers_are_counted_only_outside_prologue(self) -> None:
+        address = 0x1000
+        body = assemble(
+            make_assembler(),
+            """
+                push rbp
+                mov rbp, rsp
+                push r15
+                push r14
+                push r13
+                push r12
+                push rbx
+                sub rsp, 0x58
+                push rsi
+                push rdi
+                push r9
+                push rsi
+                push rsi
+                push rsi
+                push r15
+                push r14
+                push r13
+                push r12
+                push rbx
+                push r11
+                push r10
+            """,
+            address,
+        )
+        instructions = list(make_disassembler().disasm(body, address))
+
+        self.assertEqual(_stack_argument_count(instructions, address), 13)
 
 
 class CheckFormatLibraryTests(unittest.TestCase):

@@ -128,7 +128,11 @@ def find_format_calls(
                 )
                 continue
 
-            n_variadic = _estimate_variadic_count(instructions[:index], spec)
+            n_variadic = _estimate_variadic_count(
+                instructions[:index],
+                spec,
+                function.address,
+            )
             calls.append(
                 FormatCall(
                     function_name=function.name,
@@ -257,11 +261,12 @@ def _plt_entry_start(section: lief.ELF.Section, instruction_address: int) -> int
 def _estimate_variadic_count(
     previous_instructions: list[Any],
     spec: FormatFunctionSpec,
+    function_address: int,
 ) -> int:
     window = _call_setup_window(previous_instructions)
     gpr_count = _count_gpr_variadic_args(window, spec)
     vector_count = _vector_argument_count(window)
-    stack_count = _stack_argument_count(window)
+    stack_count = _stack_argument_count(window, function_address)
     return gpr_count + vector_count + stack_count
 
 
@@ -398,14 +403,19 @@ def _explicit_al_count(instructions: list[Any]) -> int | None:
     return 0
 
 
-def _stack_argument_count(instructions: list[Any]) -> int:
+def _stack_argument_count(
+    instructions: list[Any],
+    function_address: int,
+) -> int:
     import capstone
     import capstone.x86_const as x86
 
+    prologue_saves = _prologue_save_addresses(instructions, function_address)
     push_count = sum(
         1
         for instruction in instructions
-        if instruction.mnemonic == "push" and not _is_callee_saved_push(instruction)
+        if instruction.mnemonic == "push"
+        and instruction.address not in prologue_saves
     )
     stack_slots: set[int] = set()
 
@@ -422,15 +432,62 @@ def _stack_argument_count(instructions: list[Any]) -> int:
     return push_count + len(stack_slots)
 
 
-def _is_callee_saved_push(instruction: Any) -> bool:
+def _prologue_save_addresses(
+    instructions: list[Any],
+    function_address: int,
+) -> set[int]:
+    if not instructions or instructions[0].address != function_address:
+        return set()
+
+    index = 0
+    if instructions[index].mnemonic == "endbr64":
+        index += 1
+
+    if index >= len(instructions) or not _is_register_push(instructions[index], "rbp"):
+        return set()
+    rbp_push = instructions[index]
+    index += 1
+
+    if index >= len(instructions) or not _is_mov_rbp_rsp(instructions[index]):
+        return set()
+    index += 1
+
+    saves = {rbp_push.address}
+    while index < len(instructions) and _is_callee_saved_push(instructions[index]):
+        saves.add(instructions[index].address)
+        index += 1
+    return saves
+
+
+def _is_mov_rbp_rsp(instruction: Any) -> bool:
     import capstone.x86_const as x86
 
-    if len(instruction.operands) != 1:
-        return False
-    operand = instruction.operands[0]
-    if operand.type != x86.X86_OP_REG:
-        return False
-    return instruction.reg_name(operand.reg) in {"rbp", "rbx", "r12", "r13", "r14", "r15"}
+    return (
+        instruction.mnemonic == "mov"
+        and len(instruction.operands) == 2
+        and instruction.operands[0].type == x86.X86_OP_REG
+        and instruction.operands[0].reg == x86.X86_REG_RBP
+        and instruction.operands[1].type == x86.X86_OP_REG
+        and instruction.operands[1].reg == x86.X86_REG_RSP
+    )
+
+
+def _is_register_push(instruction: Any, register: str) -> bool:
+    import capstone.x86_const as x86
+
+    return (
+        instruction.mnemonic == "push"
+        and len(instruction.operands) == 1
+        and instruction.operands[0].type == x86.X86_OP_REG
+        and instruction.reg_name(instruction.operands[0].reg) == register
+    )
+
+
+def _is_callee_saved_push(instruction: Any) -> bool:
+    return any(
+        _is_register_push(instruction, register)
+        for register in ("rbx", "r12", "r13", "r14", "r15")
+    )
 
 
 def _canonical_register(name: str) -> str | None:
